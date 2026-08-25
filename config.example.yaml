@@ -30,6 +30,12 @@ routing:
   multi_channel: sanctioned_pairs_only # off | sanctioned_pairs_only | permissive
   orphan_network: parent_fallback      # parent_fallback | content_type | flag_only
 
+schedule:
+  enabled: false                       # re-scan unattended so new shows surface themselves
+  interval_hours: 24
+  quiet_start: null                    # optional window (local hours 0-23) in which a due
+  quiet_end: null                      #   scan waits, e.g. 23 and 7. Both or neither.
+
 output:
   additions_only: channels_additions.csv
   merged: channels_merged.csv

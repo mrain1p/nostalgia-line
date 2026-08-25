@@ -1138,7 +1138,7 @@ function renderAccuracy(data) {
       <td class="num">${r.agree}/${r.n}</td>
       <td class="num">${r.sufficient ? `${r.pct}%` : '<span class="muted">too few to judge</span>'}</td>
       <td class="col-meter">${r.sufficient
-        ? `<div class="meter"><span style="width:${r.pct}%"></span></div>` : ''}</td>
+        ? `<div class="bar"><span class="${r.pct < 60 ? 'hot' : ''}" style="width:${r.pct}%"></span></div>` : ''}</td>
     </tr>`).join('');
 
   const s = data.suggestions || {};
@@ -1681,6 +1681,46 @@ function syncSourceFields() {
 
 $('source').addEventListener('change', syncSourceFields);
 
+function fillQuietSelects() {
+  for (const id of ['sched-quiet-start', 'sched-quiet-end']) {
+    const select = $(id);
+    if (select.options.length > 1) continue;
+    for (let hour = 0; hour < 24; hour += 1) {
+      select.add(new Option(`${String(hour).padStart(2, '0')}:00`, String(hour)));
+    }
+  }
+}
+
+function syncSchedNote() {
+  $('sched-note').textContent = $('sched-enabled').checked
+    ? 'A due scan starts within a minute, unless one is already running. Results land '
+      + 'here exactly as if you had pressed Scan.'
+    : '';
+}
+
+['sched-enabled'].forEach((id) => $(id).addEventListener('change', syncSchedNote));
+
+/** Replace the spec's routing-mode figures with numbers measured on THIS
+ *  library, once a scan makes that possible. */
+async function decorateModeOptions() {
+  let acc;
+  try { acc = await api('/api/accuracy'); } catch { return; }
+  if (!acc.scanned || !acc.modes) return;
+  const base = {
+    streaming_first: 'Streaming-first — route to the original network',
+    hybrid: 'Hybrid — content type first',
+    themed: 'Themed — by what a show is',
+  };
+  const by_mode = Object.fromEntries(acc.modes.map((m) => [m.mode, m]));
+  for (const option of $('routing-mode').options) {
+    const m = by_mode[option.value];
+    if (!m || !base[option.value]) continue;
+    option.textContent = m.sufficient
+      ? `${base[option.value]} — matches your lineup ${m.pct}% (n=${m.sampled})`
+      : `${base[option.value]} — ${m.agree}/${m.sampled} here, too few to judge`;
+  }
+}
+
 async function loadSettings() {
   const settings = await api('/api/settings').catch(() => null);
   if (!settings) return;
@@ -1699,6 +1739,20 @@ async function loadSettings() {
   $('routing-mode').value = settings.routing_mode;
   $('multi-channel').value = settings.multi_channel;
   $('orphan-network').value = settings.orphan_network;
+
+  const sched = settings.schedule || {};
+  fillQuietSelects();
+  $('sched-enabled').checked = Boolean(sched.enabled);
+  const interval = String(sched.interval_hours ?? 24);
+  const intervalSelect = $('sched-interval');
+  if (![...intervalSelect.options].some((o) => o.value === interval)) {
+    intervalSelect.add(new Option(`${interval} hours`, interval));
+  }
+  intervalSelect.value = interval;
+  $('sched-quiet-start').value = sched.quiet_start ?? '';
+  $('sched-quiet-end').value = sched.quiet_end ?? '';
+  syncSchedNote();
+  decorateModeOptions();
 }
 
 async function saveSettings() {
@@ -1714,6 +1768,12 @@ async function saveSettings() {
     include_movies: $('include-movies').checked,
     multi_channel: $('multi-channel').value,
     orphan_network: $('orphan-network').value,
+    schedule: {
+      enabled: $('sched-enabled').checked,
+      interval_hours: Number($('sched-interval').value || 24),
+      quiet_start: $('sched-quiet-start').value === '' ? null : Number($('sched-quiet-start').value),
+      quiet_end: $('sched-quiet-end').value === '' ? null : Number($('sched-quiet-end').value),
+    },
   };
   if ($('plex-token').value.trim()) payload.plex_token = $('plex-token').value.trim();
   if ($('jellyfin-key').value.trim()) payload.jellyfin_api_key = $('jellyfin-key').value.trim();

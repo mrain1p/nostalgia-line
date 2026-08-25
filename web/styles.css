@@ -347,6 +347,14 @@ tr.is-selected:hover { background: rgba(69,217,196,.2); }
 .flag { color: var(--amber); margin-left: 5px; cursor: help; }
 .overridden { color: var(--accent); margin-left: 5px; }
 
+/* what the latest scan changed */
+.delta {
+  font: 600 9.5px/1 var(--mono); text-transform: uppercase; letter-spacing: .07em;
+  padding: 3px 6px; border-radius: 4px; margin-left: 6px; vertical-align: 1px;
+}
+.delta-new { color: var(--green); border: 1px solid rgba(95,207,128,.45); }
+.delta-changed { color: var(--amber); border: 1px solid rgba(245,181,68,.45); }
+
 .netstatus {
   display: inline-block; font: 500 10.5px/1 var(--mono);
   text-transform: uppercase; letter-spacing: .06em;
@@ -371,6 +379,19 @@ tr.is-selected:hover { background: rgba(69,217,196,.2); }
 .tag-thin  { color: var(--amber); border-color: rgba(245,181,68,.45); }
 
 .empty { color: var(--ink-3); text-align: center; padding: 44px 20px; font-size: 13px; }
+
+/* ── routing accuracy panel ───────────────────────────────── */
+.accuracy { margin-top: 34px; border-top: 1px solid var(--line); padding-top: 8px; }
+.accuracy h4 { margin: 18px 0 6px; font-size: 13px; }
+.accuracy .stats { margin-bottom: 10px; }
+.accuracy .table-wrap { margin-top: 8px; }
+.accuracy .col-meter { width: 160px; }
+.accuracy .hint { margin: 6px 0; max-width: 72ch; }
+
+.field-pair { display: flex; gap: 8px; align-items: center; }
+
+.prov-item.is-clickable { cursor: pointer; }
+.prov-item.is-clickable:hover { color: var(--ink); }
 .pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 16px; font-size: 13px; color: var(--ink-3); }
 .pager span { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
