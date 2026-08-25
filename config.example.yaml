@@ -1,14 +1,31 @@
 # Nostalgia Line configuration. Copy to config.yaml and fill in.
+# Nearly all of this is editable in the web UI - you should not need to hand-edit it.
+
+source: plex                           # plex | jellyfin
+
 plex:
   url: http://192.168.1.245:32400     # host IP; Plex binds host network in Docker
   token: ""                            # X-Plex-Token
   libraries: []                        # opt-in per library, e.g. [Shows, Movies]. [] = all.
+
+jellyfin:
+  url: http://192.168.1.245:8096
+  api_key: ""                          # Dashboard > Advanced > API Keys
+  user_id: ""                          # optional; an admin is picked automatically
+  libraries: []                        # opt-in per library. [] = all.
+
+nostalgiatv:
+  # Optional. Only the M3U playlist is read - a published interop format, never
+  # NostalgiaTV's private API - and only to pull real channel artwork.
+  m3u_url: ""                          # https://your-nostalgiatv/channels.m3u?profileId=...
+  auto_refresh_logos: true             # re-pull artwork after each scan
 
 tmdb:
   api_key: ""                          # same key Kometa uses
   rate_limit: 50                       # requests/sec. TMDB's documented ceiling.
 
 routing:
+  include_movies: false                # films route on genre/era alone - opt in
   mode: streaming_first                # streaming_first | hybrid | themed
   multi_channel: sanctioned_pairs_only # off | sanctioned_pairs_only | permissive
   orphan_network: parent_fallback      # parent_fallback | content_type | flag_only
@@ -28,3 +45,4 @@ data:
 server:
   host: 127.0.0.1
   port: 8777
+  password_hash: ""                    # set from Settings > Access, not by hand

@@ -343,3 +343,97 @@ def test_station_colliding_with_a_stock_channel_is_reported(catalog):
 def test_station_rejects_a_bad_mode():
     with pytest.raises(ValueError):
         CustomStation(number=1204, name="Bad", mode="sideways")
+
+
+# -- films (spec S3 "For films") ------------------------------------------
+
+
+def movie(**kwargs):
+    from nostalgia_line.tmdb import TMDBMovie
+
+    kwargs.setdefault("tmdb_id", 1)
+    kwargs.setdefault("title", "Test Film")
+    kwargs.setdefault("release_date", "2015-01-01")
+    return TMDBMovie(**kwargs)
+
+
+def test_an_oscar_collection_wins_outright(cascade):
+    resolution = cascade.resolve_movie(
+        "Some Winner", 2015, movie(collection="Oscar Best Picture Collection")
+    )
+    assert resolution.primary.channel_number == 1113
+
+
+def test_distinctive_genres_route_before_the_decade(cascade):
+    for genre, channel in [("Western", 1100), ("War", 1103), ("Documentary", 1032)]:
+        resolution = cascade.resolve_movie(f"A {genre} Film", 2015, movie(genres=[genre]))
+        assert resolution.primary.channel_number == channel, genre
+
+
+def test_the_era_split_keeps_modern_horror_from_swallowing_the_library(cascade):
+    """Spec S3: without this, Terror Channel took 430 titles in testing."""
+    old = cascade.resolve_movie("Old Fright", 1985, movie(genres=["Horror"], release_date="1985-01-01"))
+    new = cascade.resolve_movie("New Fright", 2018, movie(genres=["Horror"], release_date="2018-01-01"))
+    assert old.primary.channel_number == 1053, "pre-2000 horror goes to VHS Channel"
+    assert new.primary.channel_number == 1037, "modern horror goes to Terror Channel"
+
+
+def test_pre_1950_films_go_to_the_classic_channel(cascade):
+    resolution = cascade.resolve_movie("Very Old", 1938, movie(release_date="1938-01-01"))
+    assert resolution.primary.channel_number == 1050
+
+
+def test_foreign_and_acclaimed_reaches_benchmark_hits(cascade):
+    resolution = cascade.resolve_movie(
+        "Un Film", 2010,
+        movie(original_language="fr", vote_average=8.2, vote_count=2000, release_date="2010-01-01"),
+    )
+    assert resolution.primary.channel_number == 1112
+
+
+def test_anime_films_are_excluded_from_benchmark_hits(cascade):
+    """Spec S3.4: otherwise Demon Slayer lands alongside world cinema."""
+    resolution = cascade.resolve_movie(
+        "An Anime Film", 2020,
+        movie(original_language="ja", genres=["Animation"], vote_average=8.5,
+              vote_count=4000, release_date="2020-01-01"),
+    )
+    assert resolution.primary.channel_number != 1112
+
+
+def test_the_decade_fallback_is_low_confidence_and_reviewed(cascade):
+    resolution = cascade.resolve_movie(
+        "Ordinary Film", 2003, movie(genres=["Comedy"], release_date="2003-01-01")
+    )
+    assert resolution.primary.channel_number == 1094, "The 2000's"
+    assert resolution.primary.confidence == LOW
+    assert resolution.needs_review
+
+
+def test_a_film_already_in_the_lineup_is_left_alone(cascade, defaults):
+    row = next(r for r in defaults.rows if r.release_year)
+    resolution = cascade.resolve_movie(row.title, row.release_year, movie())
+    assert resolution.status == STATUS_APP
+
+
+def test_a_film_with_no_year_and_no_genre_is_surfaced(cascade):
+    resolution = cascade.resolve_movie("Nothing Known", None, movie(release_date=""))
+    assert resolution.status == STATUS_UNASSIGNED
+    assert resolution.needs_review
+
+
+def test_films_never_reach_a_no_content_channel(cascade, catalog):
+    import random
+
+    random.seed(11)
+    genres = ["Drama", "Comedy", "Horror", "Western", "War", "Documentary", "Animation", "Music"]
+    for i in range(200):
+        year = random.randint(1930, 2025)
+        resolution = cascade.resolve_movie(
+            f"Probe {i}", year,
+            movie(genres=random.sample(genres, k=1), release_date=f"{year}-01-01",
+                  original_language=random.choice(["en", "ja", "fr"]),
+                  vote_average=random.uniform(4, 9), vote_count=random.randint(0, 3000)),
+        )
+        for a in resolution.assignments:
+            assert catalog.require(a.channel_number).accepts_content

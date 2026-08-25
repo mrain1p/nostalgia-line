@@ -8,6 +8,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# gosu drops privileges for PUID/PGID; tzdata makes the TZ env var mean something.
+RUN apt-get update && apt-get install -y --no-install-recommends gosu tzdata && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

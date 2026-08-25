@@ -20,21 +20,10 @@ jobs:
       - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
 
-  docker:
+  container:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t nostalgia-line:ci .
-      - name: Container starts and serves the API
-        run: |
-          docker run -d --name nl -p 8777:8777 nostalgia-line:ci
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8777/api/status > /dev/null; then
-              echo "up after ${i}s"
-              curl -s http://127.0.0.1:8777/api/status
-              docker rm -f nl
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "container never became healthy"; docker logs nl; exit 1
+      - name: Boots, seeds /config, honours PUID/PGID
+        run: sh scripts/verify_container.sh nostalgia-line:ci 8779

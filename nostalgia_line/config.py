@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+SOURCES = ("plex", "jellyfin")
 ROUTING_MODES = ("streaming_first", "hybrid", "themed")
 MULTI_CHANNEL_MODES = ("off", "sanctioned_pairs_only", "permissive")
 ORPHAN_MODES = ("parent_fallback", "content_type", "flag_only")
@@ -21,6 +22,25 @@ class PlexConfig:
 
 
 @dataclass
+class JellyfinConfig:
+    url: str = "http://127.0.0.1:8096"
+    api_key: str = ""
+    user_id: str = ""
+    libraries: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NostalgiaTVConfig:
+    """Optional pointers at a NostalgiaTV install.
+
+    Only interop formats are used - the M3U playlist - never its private API.
+    """
+
+    m3u_url: str = ""
+    auto_refresh_logos: bool = True
+
+
+@dataclass
 class TMDBConfig:
     api_key: str = ""
     rate_limit: int = 50
@@ -28,6 +48,10 @@ class TMDBConfig:
 
 @dataclass
 class RoutingConfig:
+    # Films are opt-in. They outnumber shows several times over in a typical
+    # library, and their routing has no network to lean on - only genre, era and
+    # collection - so the results deserve a deliberate choice.
+    include_movies: bool = False
     mode: str = "streaming_first"
     multi_channel: str = "sanctioned_pairs_only"
     orphan_network: str = "parent_fallback"
@@ -65,11 +89,19 @@ class DataConfig:
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8777
+    # Empty means no authentication, which is the default: this is a LAN tool and
+    # a password would be friction. Set one if it is reachable from anywhere else.
+    password_hash: str = ""
 
 
 @dataclass
 class Config:
+    # Which media server holds the library. NostalgiaTV is never contacted -
+    # it only supplies channels.csv, which the user imports and exports.
+    source: str = "plex"
     plex: PlexConfig = field(default_factory=PlexConfig)
+    jellyfin: JellyfinConfig = field(default_factory=JellyfinConfig)
+    nostalgiatv: NostalgiaTVConfig = field(default_factory=NostalgiaTVConfig)
     tmdb: TMDBConfig = field(default_factory=TMDBConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -87,7 +119,9 @@ class Config:
         d.pop("root", None)
         # never hand secrets to the browser
         d["plex"]["token"] = bool(self.plex.token)
+        d["jellyfin"]["api_key"] = bool(self.jellyfin.api_key)
         d["tmdb"]["api_key"] = bool(self.tmdb.api_key)
+        d["server"]["password_hash"] = bool(self.server.password_hash)
         return d
 
 
@@ -111,7 +145,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             raw = yaml.safe_load(fh) or {}
 
     cfg = Config(
+        source=str(raw.get("source") or "plex").strip().lower(),
         plex=PlexConfig(**_section(raw, "plex")),
+        jellyfin=JellyfinConfig(**_section(raw, "jellyfin")),
+        nostalgiatv=NostalgiaTVConfig(**_section(raw, "nostalgiatv")),
         tmdb=TMDBConfig(**_section(raw, "tmdb")),
         routing=RoutingConfig(**_section(raw, "routing")),
         output=OutputConfig(**_section(raw, "output")),
@@ -126,7 +163,17 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         cfg.plex.token = env
     if env := os.getenv("TMDB_API_KEY"):
         cfg.tmdb.api_key = env
+    if env := os.getenv("JELLYFIN_URL"):
+        cfg.jellyfin.url = env
+    if env := os.getenv("JELLYFIN_API_KEY"):
+        cfg.jellyfin.api_key = env
+    if env := os.getenv("NOSTALGIATV_M3U_URL"):
+        cfg.nostalgiatv.m3u_url = env
+    if env := os.getenv("NOSTALGIA_SOURCE"):
+        cfg.source = env.strip().lower()
 
+    if cfg.source not in SOURCES:
+        raise ValueError(f"source must be one of {SOURCES}, got {cfg.source!r}")
     cfg.routing.validate()
     return cfg
 
@@ -134,7 +181,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
 def save_config(cfg: Config, path: str | os.PathLike[str]) -> None:
     """Write config back out, preserving secrets already held in memory."""
     payload = {
+        "source": cfg.source,
         "plex": asdict(cfg.plex),
+        "jellyfin": asdict(cfg.jellyfin),
+        "nostalgiatv": asdict(cfg.nostalgiatv),
         "tmdb": asdict(cfg.tmdb),
         "routing": asdict(cfg.routing),
         "output": asdict(cfg.output),

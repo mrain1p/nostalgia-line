@@ -1,15 +1,14 @@
 # Nostalgia Line
 
-A companion app for **NostalgiaTV** that puts every show in your Plex library on a
-retro TV channel — and shows you the ones it can't place.
+A companion app for **NostalgiaTV** that puts every show in your Plex or Jellyfin
+library on a retro TV channel — and shows you the ones it can't place.
 
 NostalgiaTV ships a default `channels.csv` assigning ~4,200 well-known titles to
 channels. Anything else in your library plays nowhere, and there's no way to see
 what's missing. Nostalgia Line finds those titles, routes them, and hands you a
 merged CSV you can upload straight back.
 
-> **Status: 1.0 beta.** Shows only. Films are implemented but off by default —
-> see [Scope](#scope).
+> **Status: 1.0.** Shows by default; films are a switch away.
 
 ---
 
@@ -20,7 +19,7 @@ exposes `studio`, which is the *production company*, not the broadcast network.
 Across an 806-series library that produced 503 distinct values, topping out at
 "Marvel Studios" with 13. Plex has no network field at all.
 
-So the network comes from TMDB:
+So the network comes from TMDB, joined on the id your media server already stores:
 
 ```
 Plex library
@@ -82,9 +81,8 @@ curl -O https://raw.githubusercontent.com/mrain1p/nostalgia-line/main/docker-com
 docker compose pull && docker compose up -d
 ```
 
-> **Tags:** `:dev` is the only published tag today. `main` is the stable branch
-> and deliberately does not build, so `:latest` does not exist yet. Pin to a
-> commit with `:sha-<short>` if you want to stay put across `dev` pushes.
+> **Tags:** `:latest` tracks `main`, `:dev` tracks `dev`, and `:v1.0.0` pins a
+> release. Use `:latest` unless you want the bleeding edge.
 
 Then open <http://localhost:8777> and fill in the Settings tab. Everything —
 Plex URL, token, TMDB key, routing mode, custom stations — is configured in the
@@ -129,32 +127,53 @@ python run.py
 
 ## Using it
 
-**Settings** → enter your Plex URL, `X-Plex-Token` and a TMDB API key (the same
-one Kometa uses), then hit **Test connection**.
+**Settings** → pick your media server (**Plex** or **Jellyfin**), enter its URL and
+credential, add a TMDB API key (the same one Kometa uses), then hit
+**Test connection**.
 
 **Scan library** → pulls every show, resolves each against TMDB, and diffs
 against your existing `channels.csv`. TMDB responses are cached on disk by
 `tmdb_id`, so the second scan is much faster.
 
-**Library tab** — the main view. Every title as a row: name, year, episode count,
-network, assigned channel, and status — *already assigned by the app* vs
-*assigned by Nostalgia Line* vs *unassigned*. Sortable, filterable, searchable.
-Click any channel chip to reassign by hand.
+**Library tab** — the main view, with posters. Every title as a row: name, year,
+seasons, episodes, network, channel, confidence, and how it was placed. Sortable,
+filterable, searchable. The stat tiles at the top are the filters — click
+*Unassigned* or *Needs review* to see exactly what the number counts.
 
-**Review tab** — everything low-confidence plus every orphan network, with the
-show's overview and a TMDB link so you can judge quickly. Each card also offers
-*All from <network>*, which jumps to the library filtered to that network.
+Click a row for the full picture: overview, TMDB network, genres, ids, every
+channel it sits on, and the reasoning chain behind each placement with its rule
+and confidence.
 
-**Channels tab** — channel-by-channel counts, flagging channels that are empty or
-have 1–3 titles. Watch this: streaming-first routing concentrates content. In
-testing, Netflicks alone took 161 of 806 series.
+Filter by how a title was placed — `from your channels.csv`, `placed by Nostalgia
+Line`, `assigned by you`, or `not placed` — so the app's guesses and your
+decisions never blur together.
+
+Select rows to assign in bulk; *Select all matching* spans every page.
+
+**Review tab** — everything low-confidence plus every orphan network, **grouped by
+cause**. A 59-item queue is rarely 59 decisions: 22 of them were four or five
+titles each from a single unmapped network, and mapping that network once clears
+the cluster. Each group carries the fix inline, and you can accept or assign a
+whole group at once.
+
+**Channels tab** — channel-by-channel counts with artwork, flagging channels that
+are empty or have 1–3 titles. Watch this: streaming-first routing concentrates
+content. In testing, Netflicks alone took 161 of 806 series.
+
+Click a channel for its contents — every title on it, why it landed there, and
+what else it sits on. A second pane shows **what actually aired on the real
+station** the channel parodies, marking what you have and what you are missing.
+Titles the lineup file places there but that are not in your library are listed
+separately, because there is nothing to edit about them.
 
 **Networks tab** — the highest-leverage screen. Every TMDB network in your
 library, worst-covered first, with how many titles each one accounts for and
 where they currently land. See [Fixing a whole network at once](#fixing-a-whole-network-at-once).
 
-**Export…** → shows a preview before writing anything, then produces the files
-below.
+**Export…** → previews what would be written and runs a preflight — every
+original row survives verbatim, non-numeric years kept as written, nothing
+targets a no-content channel, no duplicates, no blank titles. Writing is disabled
+while any check fails.
 
 ---
 
@@ -174,9 +193,15 @@ Channel Number,Channel Name,Title,Release Year
 | `channels_merged.csv` | **your original file plus the additions.** This is the one you upload back to NostalgiaTV. |
 
 Nothing is ever removed or rewritten. If your file had 4,651 rows and Nostalgia
-Line adds 300, the merged file has exactly 4,951 — the original 4,651 byte-for-byte
-plus 300 new ones. The exporter asserts this before writing and refuses if it
-doesn't hold.
+Line adds 300, the merged file has exactly 4,951 — the original 4,651
+byte-for-byte plus 300 new ones. The exporter asserts this before writing and
+refuses if it doesn't hold.
+
+That guarantee is literal. Exporting with **zero** additions reproduces the file
+you imported byte-for-byte, down to the encoding and line endings. Two things had
+to be right for that: 37 rows of the stock file use `Various` as a release year
+rather than a number, and their export is plain UTF-8 with bare LF where Python's
+CSV writer defaults to CRLF. Both were getting quietly mangled.
 
 The export dialog previews all of it first: how many rows, how many are secondary
 channels, how many are being held back for review, and which channels are most
@@ -316,12 +341,19 @@ rather than collide.
 
 ---
 
-## Scope
+## Films
 
-**1.0 is shows only.** Film routing (genre + decade + collection; movies have no
-`networks` field) is implemented and tested but off by default. Enable it with
-`POST /api/scan?include_movies=true` if you want to try it — the UI switch lands
-in a later release.
+Off by default, switched on in Settings → Routing.
+
+That default is deliberate. Films have no network to lean on — movies carry no
+`networks` field at all — so they route on collection, distinctive genre, era and
+decade. A decade fallback is a weak enough signal that it should be a choice
+rather than a surprise, especially since films usually outnumber shows several
+times over.
+
+The era split matters more than it looks: without sending pre-2000 horror to VHS
+Channel, Terror Channel swallowed 430 titles in the spec's own testing. On a
+1,500-film synthetic run the heaviest channel holds 12%.
 
 ---
 
@@ -364,19 +396,25 @@ python -m pytest
 python run.py --reload
 ```
 
-170 tests covering the catalog, the cascade, custom stations, network mapping and
-the rollup, bulk assignment, Plex paging, cache durability, the export integrity
-guarantee, and the whole HTTP surface. No network access required — Plex and TMDB
-are faked throughout.
+320 tests covering the catalog, the cascade, custom stations, network mapping and
+the rollup, bulk assignment, both media-server adapters and their paging, cache
+durability, the export integrity guarantee, and the whole HTTP surface. No network
+access required — Plex, Jellyfin and TMDB are faked throughout.
+
+The Jellyfin adapter has **not** been run against a real server; its tests pin the
+documented response shapes. If Jellyfin changes, start there.
 
 ### Layout
 
 ```
 nostalgia_line/
   config.py     configuration, env-var overrides
+  media.py      MediaItem, guid/ProviderIds normalisation, LibrarySource
+  sources.py    picks the configured server
+  plex.py       Plex adapter
+  jellyfin.py   Jellyfin (and probably Emby) adapter
   channels.py   catalog, defaults, sanctioned pairs, title normalization
   stations.py   custom stations
-  plex.py       Plex client
   tmdb.py       TMDB client, disk cache, rate limiting
   cascade.py    the resolution cascade
   pipeline.py   scan orchestration
@@ -385,6 +423,73 @@ nostalgia_line/
   server.py     FastAPI app
 web/            single-page UI, no build step
 ```
+
+## Media servers, and why not NostalgiaTV
+
+Nostalgia Line reads your library from **Plex** or **Jellyfin**, selected in
+Settings. Both expose the TMDB id the cascade joins on — Plex as
+`<Guid id="tmdb://1396"/>`, Jellyfin as `ProviderIds: {"Tmdb": "1396"}` — and both
+normalise to the same internal item, so nothing downstream knows the difference.
+Emby is untested but uses the same API family as Jellyfin, so it may work by
+pointing the Jellyfin source at it.
+
+**NostalgiaTV itself is never contacted.** It does maintain its own content index
+with the same ids, and reading from it would cover every backend it supports in
+one integration. It was considered and rejected: the server API is closed,
+undocumented, licensed, and ships on a moving tag, so coupling to it means
+breaking whenever it refactors. `channels.csv` is a far more stable contract.
+
+The exchange is therefore file-based, in both directions:
+
+```
+NostalgiaTV  --export channels.csv-->  Nostalgia Line
+NostalgiaTV  <--import merged csv----  Nostalgia Line
+```
+
+One consequence worth knowing: your media server may hold libraries NostalgiaTV
+doesn't use. Set the per-library opt-in in Settings to match, or you'll route
+content NostalgiaTV can't play.
+
+## Channel artwork
+
+Channels show the real network's logo automatically. Every scan already downloads
+each series' `networks[]` from TMDB, which carries a `logo_path`, so the artwork
+comes free — no configuration, no extra API calls, and it works on a fresh
+install for everyone.
+
+**The fastest route, if you run NostalgiaTV:** put its M3U URL in Settings →
+NostalgiaTV and hit *Fetch artwork now*. It is saved, so artwork can also refresh
+itself after each scan — which means a channel you add later gets its logo without
+you doing anything. You can upload a `.m3u` file instead if the playlist is not
+reachable by URL. NostalgiaTV publishes a `tvg-logo` for every
+channel, public and keyed by the channel's own app key, so this pulls the real
+artwork for the whole lineup in one pass — measured at 96/96 channels in 5
+seconds, no credentials. M3U is an interop format rather than a private API, so
+it is a safe thing to depend on.
+
+```
+https://your-nostalgiatv/channels.m3u?profileId=…
+```
+
+Resolution order for a channel's logo:
+
+1. Artwork you imported, in `/config/logos`
+2. Artwork from a read-only mount, if you added one
+3. The TMDB logo of a real network that maps to the channel
+4. A generated badge — initials and channel number, deterministically coloured
+
+To override with your own art, use **Import artwork** on the Channels tab
+(images or a zip), or mount a folder read-only:
+
+```yaml
+volumes:
+  - "/path/to/your/logos:/logos:ro"
+```
+
+Filenames are matched by channel number (`1068.png`), channel name
+(`H.B.Yo Min.png`), or **the real network being parodied** (`logo_hbo.png`) —
+which is how artwork is usually filed. Unmatched files are reported back rather
+than silently ignored.
 
 ## Branches
 
@@ -406,13 +511,27 @@ box against a stock install. All credit for that lineup goes to NostalgiaTV; if
 you maintain it and would rather this repo not redistribute the file, open an
 issue and I'll swap it for a first-run download.
 
-## A note on access
+## Access
 
-Nostalgia Line has no authentication. It holds your Plex token and TMDB key, and
-it writes files. It binds to `127.0.0.1` by default; the Docker image binds
-`0.0.0.0` because it has to. Treat it as a trusted-LAN tool — don't expose the
-port to the internet or put it behind a public reverse proxy without adding auth
-in front of it.
+Nostalgia Line holds your Plex token and TMDB key, writes files, and fetches
+whatever URL you point it at. On a trusted LAN a password is only friction, so
+**there is none by default** — enabling one silently would lock people out of
+their own tool on upgrade.
+
+Set one in Settings → Access, or enforce it from compose:
+
+```yaml
+environment:
+  - NOSTALGIA_PASSWORD=something-long
+```
+
+An environment password wins and cannot be changed from the UI. Passwords are
+stored as salted PBKDF2 and never sent to the browser. `/api/status` stays open
+so the container healthcheck keeps working.
+
+This is session-cookie auth over plain HTTP, which is appropriate for a LAN tool
+and **not** a substitute for TLS. If you expose this to the internet, put it
+behind a reverse proxy that terminates HTTPS.
 
 ## License
 

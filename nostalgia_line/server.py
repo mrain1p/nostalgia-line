@@ -2,24 +2,44 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .auth import (
+    COOKIE,
+    OPEN_PATHS,
+    Sessions,
+    hash_password,
+    password_from_env,
+    verify_password,
+)
 from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED
-from .channels import ChannelCatalog, DefaultAssignments, load_network_map, load_orphan_networks
-from .config import Config, load_config, save_config
-from .export import build_addition_rows
+from .channels import (
+    ChannelCatalog,
+    DefaultAssignments,
+    load_network_map,
+    load_orphan_networks,
+    normalize_title,
+)
+from .config import SOURCES, Config, load_config, save_config
+from .export import build_addition_rows, preflight as run_preflight
 from .export import export as run_export
 from .pipeline import ScanResult, apply_override, run_scan
-from .plex import PlexClient, PlexError
+from .posters import DEFAULT_SIZE, PosterCache
+from .logos import LogoImporter
+from .media import SourceError
+from .sources import build_source, missing_credential_message, source_is_configured
 from .stations import CUSTOM_BAND_START, CustomStation, StationBook
 from .store import Store
 from .tmdb import TMDBCache, TMDBClient, TMDBError
@@ -40,9 +60,14 @@ class AppState:
         self.stations = StationBook.load(self.cfg.path("stations.json"))
         self.stations.register_with(self.catalog)
         self.store = Store(self.cfg.path(self.cfg.data.state_file))
-        self.result: ScanResult | None = None
+        self.posters = PosterCache(self.cfg.path(self.cfg.data.cache_dir) / "posters")
+        self.scan_path = self.cfg.path("scan.json.gz")
+        # A restart should not cost a re-scan. The snapshot may be dated, and the
+        # UI says so rather than pretending it is live.
+        self.result: ScanResult | None = ScanResult.load(self.scan_path)
         self.scan_task: asyncio.Task | None = None
         self.progress: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0}
+        self.sessions = Sessions()
         self.last_error: str = ""
         self.last_export: dict | None = None
         # Set whenever a routing input changes. The displayed scan was produced
@@ -56,14 +81,31 @@ class AppState:
         self.defaults = DefaultAssignments.load(self.cfg.path(self.cfg.data.channels_csv))
         self.stations.register_with(self.catalog)
 
+    def persist_result(self) -> None:
+        if self.result is not None:
+            try:
+                self.result.save(self.scan_path)
+            except OSError as exc:
+                self.last_error = f"could not save the scan: {exc}"
+
     def mark_stale(self, reason: str) -> None:
         if self.result is not None:
             self.stale = True
             self.stale_reason = reason
 
     @property
+    def password_hash(self) -> str:
+        """A password from the environment wins, so compose can enforce one."""
+        env = password_from_env()
+        return hash_password(env) if env else self.cfg.server.password_hash
+
+    @property
+    def locked(self) -> bool:
+        return bool(self.password_hash)
+
+    @property
     def configured(self) -> bool:
-        return bool(self.cfg.plex.url and self.cfg.plex.token and self.cfg.tmdb.api_key)
+        return bool(source_is_configured(self.cfg) and self.cfg.tmdb.api_key)
 
 
 def _config_path() -> Path:
@@ -80,13 +122,20 @@ app = FastAPI(title="Nostalgia Line", version=__version__)
 
 
 class SettingsIn(BaseModel):
+    source: str | None = None
     plex_url: str | None = None
     plex_token: str | None = None
     plex_libraries: list[str] | None = None
+    jellyfin_url: str | None = None
+    jellyfin_api_key: str | None = None
+    jellyfin_libraries: list[str] | None = None
+    nostalgiatv_m3u_url: str | None = None
+    auto_refresh_logos: bool | None = None
     tmdb_api_key: str | None = None
     routing_mode: str | None = None
     multi_channel: str | None = None
     orphan_network: str | None = None
+    include_movies: bool | None = None
 
 
 class OverrideIn(BaseModel):
@@ -98,6 +147,11 @@ class BulkOverrideIn(BaseModel):
     uids: list[str] = Field(default_factory=list)
     channels: list[int] = Field(default_factory=list)
     mode: str = "replace"  # replace | add
+
+
+class M3UImportIn(BaseModel):
+    # Blank falls back to the saved playlist URL from Settings.
+    url: str = ""
 
 
 class NetworkMapIn(BaseModel):
@@ -120,6 +174,80 @@ class ExportIn(BaseModel):
     include_review: bool = False
 
 
+# -- optional access control ----------------------------------------------
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Gate /api behind a session when a password is set. Off by default."""
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if not path.startswith("/api") or path in OPEN_PATHS or not state.locked:
+            return await call_next(request)
+        if state.sessions.valid(request.cookies.get(COOKIE)):
+            return await call_next(request)
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+
+
+app.add_middleware(AuthMiddleware)
+
+
+class LoginIn(BaseModel):
+    password: str
+
+
+class PasswordIn(BaseModel):
+    password: str = ""
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request) -> dict:
+    return {
+        "enabled": state.locked,
+        "authenticated": (not state.locked)
+        or state.sessions.valid(request.cookies.get(COOKIE)),
+        "enforced_by_env": bool(password_from_env()),
+    }
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginIn) -> JSONResponse:
+    if not state.locked:
+        return JSONResponse({"authenticated": True, "note": "no password is set"})
+    if not verify_password(payload.password, state.password_hash):
+        raise HTTPException(status_code=401, detail="wrong password")
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        COOKIE, state.sessions.issue(), httponly=True, samesite="lax", max_age=2592000
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request) -> JSONResponse:
+    state.sessions.revoke(request.cookies.get(COOKIE))
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(COOKIE)
+    return response
+
+
+@app.post("/api/auth/password")
+def auth_set_password(payload: PasswordIn) -> dict:
+    """Set or clear the password. Clearing leaves the app open, as it starts."""
+    if password_from_env():
+        raise HTTPException(
+            status_code=400,
+            detail="the password is set by NOSTALGIA_PASSWORD; change it there",
+        )
+    password = payload.password.strip()
+    if password and len(password) < 6:
+        raise HTTPException(status_code=400, detail="use at least 6 characters")
+    state.cfg.server.password_hash = hash_password(password) if password else ""
+    save_config(state.cfg, state.config_path)
+    state.sessions.clear()
+    return {"enabled": bool(password)}
+
+
 # -- meta -----------------------------------------------------------------
 
 
@@ -128,6 +256,7 @@ def status() -> dict:
     return {
         "version": __version__,
         "configured": state.configured,
+        "source": state.cfg.source,
         "config_path": str(state.config_path),
         "scanning": bool(state.scan_task and not state.scan_task.done()),
         "progress": state.progress,
@@ -142,8 +271,25 @@ def status() -> dict:
         },
         "stations": len(state.stations),
         "store": state.store.stats(),
+        "baseline": state.store.baseline,
+        "last_export_at": state.store.last_export.get("at"),
+        "pending": _pending_changes(),
+        "posters": state.posters.stats(),
+        "scan_at": state.result.finished_at if state.result else None,
         "stats": state.result.stats() if state.result else None,
         "diagnostics": state.result.diagnostics() if state.result else None,
+    }
+
+
+def _pending_changes() -> dict:
+    """How far the current results have drifted from the loaded channels.csv."""
+    if state.result is None:
+        return {"additions": 0, "held_for_review": 0, "overrides": len(state.store.overrides)}
+    rows, _, skipped = build_addition_rows(state.result, state.catalog, state.defaults)
+    return {
+        "additions": len(rows),
+        "held_for_review": skipped,
+        "overrides": len(state.store.overrides),
     }
 
 
@@ -151,13 +297,20 @@ def status() -> dict:
 def get_settings() -> dict:
     cfg = state.cfg
     return {
+        "source": cfg.source,
         "plex_url": cfg.plex.url,
         "plex_token_set": bool(cfg.plex.token),
         "plex_libraries": cfg.plex.libraries,
+        "jellyfin_url": cfg.jellyfin.url,
+        "jellyfin_api_key_set": bool(cfg.jellyfin.api_key),
+        "jellyfin_libraries": cfg.jellyfin.libraries,
+        "nostalgiatv_m3u_url": cfg.nostalgiatv.m3u_url,
+        "auto_refresh_logos": cfg.nostalgiatv.auto_refresh_logos,
         "tmdb_api_key_set": bool(cfg.tmdb.api_key),
         "routing_mode": cfg.routing.mode,
         "multi_channel": cfg.routing.multi_channel,
         "orphan_network": cfg.routing.orphan_network,
+        "include_movies": cfg.routing.include_movies,
         "output": {"additions": cfg.output.additions_only, "merged": cfg.output.merged},
     }
 
@@ -165,6 +318,20 @@ def get_settings() -> dict:
 @app.post("/api/settings")
 def put_settings(payload: SettingsIn) -> dict:
     cfg = state.cfg
+    if payload.source:
+        if payload.source not in SOURCES:
+            raise HTTPException(status_code=400, detail=f"source must be one of {SOURCES}")
+        cfg.source = payload.source
+    if payload.jellyfin_url is not None:
+        cfg.jellyfin.url = payload.jellyfin_url.strip()
+    if payload.jellyfin_api_key:
+        cfg.jellyfin.api_key = payload.jellyfin_api_key.strip()
+    if payload.jellyfin_libraries is not None:
+        cfg.jellyfin.libraries = [s for s in payload.jellyfin_libraries if s.strip()]
+    if payload.nostalgiatv_m3u_url is not None:
+        cfg.nostalgiatv.m3u_url = payload.nostalgiatv_m3u_url.strip()
+    if payload.auto_refresh_logos is not None:
+        cfg.nostalgiatv.auto_refresh_logos = payload.auto_refresh_logos
     if payload.plex_url is not None:
         cfg.plex.url = payload.plex_url.strip()
     if payload.plex_token:
@@ -179,6 +346,8 @@ def put_settings(payload: SettingsIn) -> dict:
         cfg.routing.multi_channel = payload.multi_channel
     if payload.orphan_network:
         cfg.routing.orphan_network = payload.orphan_network
+    if payload.include_movies is not None:
+        cfg.routing.include_movies = payload.include_movies
     try:
         cfg.routing.validate()
     except ValueError as exc:
@@ -188,41 +357,52 @@ def put_settings(payload: SettingsIn) -> dict:
     return get_settings()
 
 
-@app.post("/api/test-connection")
-async def test_connection() -> dict:
-    out: dict[str, Any] = {"plex": None, "tmdb": None}
+@app.post("/api/test/server")
+async def test_server() -> dict:
+    """Test only the media server, so a bad TMDB key cannot mask a good Plex."""
     try:
-        info = await PlexClient(state.cfg.plex.url, state.cfg.plex.token).ping()
-        sections = await PlexClient(state.cfg.plex.url, state.cfg.plex.token).sections()
-        out["plex"] = {
+        source = build_source(state.cfg)
+        info = await source.ping()
+        sections = await source.sections()
+        usable = [s for s in sections if s.type in ("show", "movie")]
+        return {
             "ok": True,
-            "name": info.get("friendlyName") or "Plex",
+            "kind": source.name,
+            "name": info.get("friendlyName") or source.name.title(),
             "version": info.get("version", ""),
-            "sections": [
-                {"title": s.title, "type": s.type} for s in sections if s.type in ("show", "movie")
-            ],
+            "sections": [{"title": s.title, "type": s.type} for s in usable],
+            "detail": f"{len(usable)} usable librar{'y' if len(usable) == 1 else 'ies'}",
         }
-    except PlexError as exc:
-        out["plex"] = {"ok": False, "error": str(exc)}
+    except SourceError as exc:
+        return {"ok": False, "kind": state.cfg.source, "error": str(exc)}
+
+
+@app.post("/api/test/tmdb")
+async def test_tmdb() -> dict:
     try:
         cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
         await TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit).verify()
-        out["tmdb"] = {"ok": True, "cached": cache.stats()}
+        cached = cache.stats()
+        return {
+            "ok": True,
+            "cached": cached,
+            "detail": f"{cached.get('series', 0)} series cached",
+        }
     except TMDBError as exc:
-        out["tmdb"] = {"ok": False, "error": str(exc)}
-    return out
+        return {"ok": False, "error": str(exc)}
 
 
 # -- scanning -------------------------------------------------------------
 
 
 @app.post("/api/scan")
-async def scan(include_movies: bool = False) -> dict:
+async def scan(include_movies: bool | None = None) -> dict:
     if state.scan_task and not state.scan_task.done():
         raise HTTPException(status_code=409, detail="a scan is already running")
     if not state.configured:
         raise HTTPException(
-            status_code=400, detail="Plex URL, Plex token and TMDB key must be set first"
+            status_code=400,
+            detail=f"{missing_credential_message(state.cfg)}, and a TMDB key",
         )
     state.last_error = ""
     state.stale = False
@@ -241,15 +421,19 @@ async def scan(include_movies: bool = False) -> dict:
                 state.stations,
                 overrides=state.store.overrides,
                 network_overrides=state.store.networks,
-                include_movies=include_movies,
+                include_movies=(
+                    state.cfg.routing.include_movies if include_movies is None else include_movies
+                ),
                 progress=progress,
             )
             state.progress = {"phase": "done", "done": 1, "total": 1}
+            state.persist_result()
+            await _refresh_playlist_logos()
         except asyncio.CancelledError:
             state.progress = {"phase": "cancelled", "done": 0, "total": 0}
             state.last_error = "scan cancelled"
             raise
-        except (PlexError, TMDBError) as exc:
+        except (SourceError, TMDBError) as exc:
             state.last_error = str(exc)
             state.progress = {"phase": "error", "done": 0, "total": 0}
         except Exception as exc:  # surfaced in the UI rather than lost to a log
@@ -272,6 +456,20 @@ async def cancel_scan() -> dict:
     return {"cancelled": True}
 
 
+async def _refresh_playlist_logos() -> None:
+    """Pull artwork after a scan, so a new custom channel gets its logo."""
+    cfg = state.cfg.nostalgiatv
+    if not (cfg.auto_refresh_logos and cfg.m3u_url.strip()):
+        return
+    try:
+        importer = LogoImporter(
+            state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
+        )
+        await importer.import_from_m3u(cfg.m3u_url.strip())
+    except Exception:  # artwork is cosmetic - never fail a scan over it
+        pass
+
+
 @app.get("/api/library")
 def library(
     status_filter: str = "",
@@ -281,6 +479,8 @@ def library(
     network: str = "",
     rule: str = "",
     confidence: str = "",
+    source: str = "",
+    item_type: str = "",
     review_only: bool = False,
     sort: str = "title",
     direction: str = "asc",
@@ -310,6 +510,11 @@ def library(
     if confidence:
         wanted = set(confidence.split(","))
         entries = [e for e in entries if e.resolution.confidence in wanted]
+    if source:
+        wanted = set(source.split(","))
+        entries = [e for e in entries if e.mapping_source in wanted]
+    if item_type:
+        entries = [e for e in entries if e.type == item_type]
     if q:
         needle = q.casefold()
         entries = [
@@ -384,7 +589,365 @@ def channels() -> dict:
             for c in state.catalog
         ]
     )
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    installed = importer.installed()
+    mounted: dict[int, str] = {}
+    for directory in _extra_logo_dirs():
+        mounted.update(
+            LogoImporter(state.catalog, directory, _network_map_with_overrides()).installed()
+        )
+    for row in rollup:
+        number = row["number"]
+        if number in installed or number in mounted:
+            row["logo_source"] = "file"
+        elif _tmdb_logo_for_channel(number):
+            row["logo_source"] = "tmdb"
+        else:
+            row["logo_source"] = "badge"
     return {"channels": rollup}
+
+
+@app.get("/api/poster")
+async def poster(path: str, size: str = DEFAULT_SIZE):
+    """Serve a TMDB poster from disk, fetching it once on the first request.
+
+    Cached under /config/cache/posters. TMDB poster paths are content-addressed,
+    so the response is safe to cache hard in the browser as well.
+    """
+    if not PosterCache.valid(path):
+        raise HTTPException(status_code=400, detail="not a TMDB poster path")
+    local = await state.posters.fetch(path, size)
+    if local is None:
+        raise HTTPException(status_code=404, detail="poster unavailable")
+    return FileResponse(
+        local,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+    )
+
+
+@app.post("/api/posters/clear")
+def clear_posters() -> dict:
+    return {"removed": state.posters.clear()}
+
+
+@app.get("/api/logos")
+def list_logos() -> dict:
+    """What artwork is installed, and which channels are still on a badge."""
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    all_installed = importer.installed()
+    routable = [c for c in state.catalog if c.accepts_content]
+    routable_numbers = {c.number for c in routable}
+    # Count only routable channels, or the three figures do not sum to the total.
+    installed = {n: f for n, f in all_installed.items() if n in routable_numbers}
+    return {
+        "directory": str(state.cfg.path("logos")),
+        "installed": [
+            {"channel": n, "name": state.catalog.name_of(n), "file": f}
+            for n, f in sorted(installed.items())
+        ],
+        "installed_count": len(installed),
+        "from_tmdb": sum(
+            1 for c in routable if c.number not in installed and _tmdb_logo_for_channel(c.number)
+        ),
+        "missing_count": sum(
+            1
+            for c in routable
+            if c.number not in installed and not _tmdb_logo_for_channel(c.number)
+        ),
+        "total_channels": len(routable),
+        "extra_dirs": [str(d) for d in _extra_logo_dirs()],
+    }
+
+
+@app.post("/api/logos")
+async def import_logos(files: list[UploadFile] = File(...)) -> dict:
+    """Import channel artwork.
+
+    Accepts any number of images, or a zip of them. Filenames are matched to
+    channels by number, by channel name, or by NostalgiaTV's own
+    `logo_<name>.png` convention, so a folder lifted straight out of another
+    install imports without renaming anything.
+    """
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    report = None
+    plain: list[tuple[str, bytes]] = []
+
+    def merge(into, other):
+        if into is None:
+            return other
+        into.imported += other.imported
+        into.unmatched += other.unmatched
+        into.skipped += other.skipped
+        return into
+
+    for upload in files:
+        blob = await upload.read()
+        name = upload.filename or "unnamed"
+        if name.lower().endswith((".m3u", ".m3u8")):
+            # A playlist names the artwork rather than containing it, so the
+            # logo URLs inside still have to be reachable from here.
+            report = merge(
+                report,
+                await importer.import_from_m3u_text(blob.decode("utf-8", errors="replace")),
+            )
+        elif name.lower().endswith(".zip"):
+            report = merge(report, importer.import_zip(blob))
+        else:
+            plain.append((name, blob))
+
+    if plain:
+        report = merge(report, importer.import_files(plain))
+
+    if report is None:
+        raise HTTPException(status_code=400, detail="no files uploaded")
+    return report.to_dict()
+
+
+@app.post("/api/logos/from-m3u")
+async def import_logos_from_m3u(payload: M3UImportIn) -> dict:
+    """Pull every channel logo from an M3U playlist in one go."""
+    importer = LogoImporter(
+        state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
+    )
+    url = payload.url.strip() or state.cfg.nostalgiatv.m3u_url.strip()
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="no playlist URL - set one on the Settings tab, or pass one here",
+        )
+    report = await importer.import_from_m3u(url)
+    # Remember a URL that worked, so it becomes a one-time setup step.
+    if report.imported and not state.cfg.nostalgiatv.m3u_url:
+        state.cfg.nostalgiatv.m3u_url = url
+        save_config(state.cfg, state.config_path)
+    return report.to_dict()
+
+
+@app.delete("/api/logos")
+def clear_logos() -> dict:
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    return {"removed": importer.clear()}
+
+
+@app.get("/api/channel-logo/{number}")
+async def channel_logo(number: int):
+    """A channel's logo.
+
+    Looks in /config/logos for a file named after the channel number, or after
+    its name in NostalgiaTV's own `logo_<name>.png` convention - so mounting an
+    existing logo folder read-only just works. Falls back to a generated badge,
+    which means the UI always has something to show.
+    """
+    channel = state.catalog.get(number)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"no channel {number}")
+
+    # Use the importer's matcher rather than a second, weaker lookup. Artwork
+    # copied straight into /config/logos keeps its original filename, which is
+    # very often the real network - logo_tnt.png for T.N.Tea - and a name-only
+    # match misses those. One matcher, so listing and serving cannot disagree.
+    importer = LogoImporter(
+        state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
+    )
+    filename = importer.installed().get(number)
+    if filename:
+        candidate = state.cfg.path("logos") / filename
+        if candidate.exists():
+            return FileResponse(
+                candidate, headers={"Cache-Control": "public, max-age=86400"}
+            )
+
+    # 2. Artwork from a read-only mount, matched the same way.
+    for directory in _extra_logo_dirs():
+        mounted = LogoImporter(state.catalog, directory, _network_map_with_overrides())
+        name = mounted.installed().get(number)
+        if name and (directory / name).exists():
+            return FileResponse(
+                directory / name, headers={"Cache-Control": "public, max-age=86400"}
+            )
+
+    # 3. The real network's logo from TMDB, cached on disk like a poster.
+    logo_path = _tmdb_logo_for_channel(number)
+    if logo_path:
+        local = await state.posters.fetch(logo_path, "w154")
+        if local is not None:
+            return FileResponse(
+                local,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "public, max-age=604800",
+                    "X-Logo-Source": "tmdb",
+                },
+            )
+
+    return Response(
+        content=_logo_placeholder(channel),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+def _extra_logo_dirs() -> list[Path]:
+    """Optional read-only logo mounts, highest priority first.
+
+    Lets a compose file point at an existing artwork folder
+    (``- /path/to/logos:/logos:ro``) without copying anything in.
+    """
+    dirs = []
+    # os.pathsep, not ":" - a literal colon swallows the drive letter on Windows.
+    for raw in (os.getenv("NOSTALGIA_LOGO_DIRS") or "/logos").split(os.pathsep):
+        candidate = Path(raw.strip())
+        if raw.strip() and candidate.is_dir():
+            dirs.append(candidate)
+    return dirs
+
+
+def _tmdb_logo_for_channel(number: int) -> str | None:
+    """The TMDB logo of a real network this channel stands in for.
+
+    Every scan already downloads each series' ``networks[]``, which carries a
+    ``logo_path``, so real artwork is available for most channels without any
+    configuration and without a single extra API call.
+    """
+    if state.result is None or not state.result.network_logos:
+        return None
+    network_map = _network_map_with_overrides()
+    # Prefer the network whose name is closest to the channel's own billing.
+    candidates = []
+    for network, logo_path in state.result.network_logos.items():
+        mapped = network_map.get(network)
+        if mapped and mapped[0] == number:
+            candidates.append((len(network), network, logo_path))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][2]
+
+
+# Deterministic hue per channel so a logo-less lineup still reads as distinct.
+_LOGO_PALETTE = [
+    ("#1f3a5f", "#8ab4f8"), ("#3b2f5e", "#c5a3ff"), ("#14453d", "#5fd0bc"),
+    ("#5a3320", "#ffab70"), ("#4a1f3d", "#ff9ecb"), ("#1e4620", "#8fd694"),
+    ("#4a4520", "#e8d16b"), ("#402020", "#ff9b9b"),
+]
+
+
+def _logo_placeholder(channel) -> str:
+    bg, fg = _LOGO_PALETTE[channel.number % len(_LOGO_PALETTE)]
+    initials = "".join(w[0] for w in re.findall(r"[A-Za-z0-9]+", channel.name))[:3].upper()
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 40" width="64" height="40">'
+        f'<rect width="64" height="40" rx="6" fill="{bg}"/>'
+        f'<text x="32" y="19" font-family="ui-monospace,monospace" font-size="15" font-weight="700"'
+        f' fill="{fg}" text-anchor="middle">{initials}</text>'
+        f'<text x="32" y="32" font-family="ui-monospace,monospace" font-size="9"'
+        f' fill="{fg}" fill-opacity="0.75" text-anchor="middle">{channel.number}</text>'
+        f"</svg>"
+    )
+
+
+@app.get("/api/channels/{number}/titles")
+def channel_titles(number: int) -> dict:
+    """Everything sitting on one channel, from your library and from the lineup file."""
+    channel = state.catalog.get(number)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"no channel {number}")
+
+    in_library = state.result.channel_titles(number, state.catalog) if state.result else []
+    known = {(normalize_title(r["title"]), r["year"]) for r in in_library}
+
+    # Rows the lineup file puts here for titles you do not actually have. Worth
+    # showing: they explain a channel's count, but there is nothing to edit.
+    absent = [
+        {"title": row.title, "year": row.release_year}
+        for row in state.defaults.titles_on_channel(number)
+        if (normalize_title(row.title), row.release_year) not in known
+    ]
+    absent.sort(key=lambda r: r["title"].casefold())
+
+    return {
+        "channel": {"number": channel.number, "name": channel.name, "category": channel.category},
+        "titles": in_library,
+        "not_in_library": absent,
+        "counts": {
+            "in_library": len(in_library),
+            "not_in_library": len(absent),
+            "needs_review": sum(1 for r in in_library if r["needs_review"]),
+        },
+    }
+
+
+@app.get("/api/channels/{number}/network-catalog")
+async def channel_network_catalog(number: int, pages: int = 2) -> dict:
+    """What actually aired on the real network this channel stands in for.
+
+    Answers the question the channel view cannot: not just what you have, but
+    what the station itself ran - and therefore what you are missing.
+    """
+    channel = state.catalog.get(number)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"no channel {number}")
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+
+    network_map = _network_map_with_overrides()
+    networks = [
+        (name, nid)
+        for name, nid in state.result.network_ids.items()
+        if (mapped := network_map.get(name)) and mapped[0] == number
+    ]
+    if not networks:
+        return {
+            "channel": {"number": channel.number, "name": channel.name},
+            "networks": [],
+            "titles": [],
+            "note": (
+                "No TMDB network in your library maps to this channel, so there is "
+                "no real-world station to list."
+            ),
+        }
+
+    # Several networks can map to one channel. Pick the one that actually
+    # accounts for the most of your titles here - shortest-name lost badly,
+    # handing Cartoon Net the catalogue of YTV because "YTV" is three letters.
+    weight: dict[str, int] = {}
+    for entry in state.result.entries:
+        if entry.network and number in entry.channels:
+            weight[entry.network] = weight.get(entry.network, 0) + 1
+    name, network_id = max(networks, key=lambda pair: (weight.get(pair[0], 0), -len(pair[0])))
+    try:
+        cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
+        client = TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit)
+        catalog = await client.network_catalog(network_id, pages=pages)
+    except TMDBError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    mine = {e.tmdb_id: e for e in state.result.entries if e.tmdb_id}
+    titles = []
+    for show in catalog:
+        entry = mine.get(show["tmdb_id"])
+        titles.append(
+            {
+                **show,
+                "in_library": entry is not None,
+                "uid": entry.uid if entry else None,
+                "channels": (
+                    [{"number": n, "name": state.catalog.name_of(n)} for n in entry.channels]
+                    if entry
+                    else []
+                ),
+                "elsewhere": bool(entry and number not in entry.channels),
+            }
+        )
+    have = sum(1 for t in titles if t["in_library"])
+    return {
+        "channel": {"number": channel.number, "name": channel.name},
+        "networks": [n for n, _ in networks],
+        "network": name,
+        "titles": titles,
+        "counts": {"total": len(titles), "in_library": have, "missing": len(titles) - have},
+    }
 
 
 @app.get("/api/review")
@@ -410,6 +973,7 @@ def override(payload: OverrideIn) -> dict:
         raise HTTPException(status_code=404, detail=f"no library item {payload.uid}")
     state.store.set_override(payload.uid, payload.channels)
     apply_override(entry, payload.channels, state.catalog)
+    state.persist_result()
     return entry.to_dict(state.catalog)
 
 
@@ -444,6 +1008,7 @@ def override_bulk(payload: BulkOverrideIn) -> dict:
         state.store.overrides[uid] = channels
         apply_override(entry, channels, state.catalog)
     state.store.save()
+    state.persist_result()
     return {"updated": len(payload.uids), "channels": payload.channels, "mode": payload.mode}
 
 
@@ -602,6 +1167,14 @@ def export_preview(include_review: bool = False) -> dict:
     }
 
 
+@app.get("/api/export/preflight")
+def export_preflight(include_review: bool = False) -> dict:
+    """Would this import cleanly? Checked before anything is written."""
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    return run_preflight(state.result, state.catalog, state.defaults, include_review)
+
+
 @app.post("/api/export")
 def export_csv(payload: ExportIn) -> dict:
     if state.result is None:
@@ -615,6 +1188,7 @@ def export_csv(payload: ExportIn) -> dict:
         include_review=payload.include_review,
     )
     state.last_export = report.to_dict()
+    state.store.record_export(state.last_export)
     return state.last_export
 
 
@@ -653,7 +1227,14 @@ async def upload_channels_file(request: Request) -> dict:
     scratch.replace(target)
 
     state.defaults = DefaultAssignments.load(target)
+    state.store.record_baseline(
+        rows=len(state.defaults),
+        channels=len({r.channel_number for r in state.defaults.rows}),
+        digest=hashlib.sha256(target.read_bytes()).hexdigest()[:16],
+        filename="channels.csv",
+    )
     state.result = None  # the old scan was diffed against the old file
+    state.scan_path.unlink(missing_ok=True)
     return {
         "rows": len(state.defaults),
         "previous_rows": previous,
@@ -678,6 +1259,35 @@ def download(which: str):
 
 
 # -- static ---------------------------------------------------------------
+
+
+def _asset_version() -> str:
+    """A token that changes whenever the UI files do.
+
+    index.html is served with no-store and the CSS/JS carry this in their query
+    string, so an upgrade always lands. Without it the browser keeps serving the
+    old interface and the new one appears simply not to exist.
+    """
+    stamp = 0.0
+    for name in ("index.html", "app.js", "styles.css"):
+        candidate = WEB_DIR / name
+        if candidate.exists():
+            stamp = max(stamp, candidate.stat().st_mtime)
+    return f"{__version__}-{int(stamp)}"
+
+
+@app.get("/", include_in_schema=False)
+def index() -> Response:
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    version = _asset_version()
+    html = html.replace('href="styles.css"', f'href="styles.css?v={version}"')
+    html = html.replace('src="app.js"', f'src="app.js?v={version}"')
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
+
 
 if WEB_DIR.exists():
     app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")

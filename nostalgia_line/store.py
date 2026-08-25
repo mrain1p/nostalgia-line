@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 
@@ -19,6 +20,10 @@ class Store:
         # TMDB network name (casefolded) -> channel number. Layered over the
         # shipped network_map.csv, so one decision covers every title on it.
         self.networks: dict[str, int] = {}
+        # Provenance of the channels.csv currently loaded, and the last export,
+        # so the UI can say "12 changes pending, last exported 20 minutes ago".
+        self.baseline: dict = {}
+        self.last_export: dict = {}
         self.load()
 
     def load(self) -> None:
@@ -36,6 +41,8 @@ class Store:
         self.networks = {
             str(k).casefold(): int(v) for k, v in (raw.get("networks") or {}).items()
         }
+        self.baseline = raw.get("baseline") or {}
+        self.last_export = raw.get("last_export") or {}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +50,8 @@ class Store:
             "overrides": self.overrides,
             "dismissed": sorted(self.dismissed),
             "networks": self.networks,
+            "baseline": self.baseline,
+            "last_export": self.last_export,
         }
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -76,6 +85,21 @@ class Store:
         if removed:
             self.save()
         return removed
+
+    def record_baseline(self, rows: int, channels: int, digest: str, filename: str = "") -> None:
+        """Remember the channels.csv the user handed us, and when."""
+        self.baseline = {
+            "rows": rows,
+            "channels": channels,
+            "sha256": digest,
+            "filename": filename,
+            "at": time.time(),
+        }
+        self.save()
+
+    def record_export(self, report: dict) -> None:
+        self.last_export = {**report, "at": time.time()}
+        self.save()
 
     def stats(self) -> dict[str, int]:
         return {

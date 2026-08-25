@@ -1,30 +1,41 @@
-# Nostalgia Line — pull and run. No build step, no login.
+# Nostalgia Line — pull and run. No build step.
 #
 #   docker compose pull && docker compose up -d
 #
-# Then open http://localhost:8777 and fill in the Settings tab.
+# If the GHCR package is still private, log in once first:
+#   echo YOUR_PAT | docker login ghcr.io -u mrain1p --password-stdin
+#
+# Then open http://<host>:8777 and fill in the Settings tab.
 # To build from source instead: docker compose -f docker-compose.build.yml up -d --build
 
 services:
   nostalgia-line:
-    # Images are published from the `dev` branch. There is no :latest yet —
-    # `main` is the stable branch and deliberately does not build.
-    image: ghcr.io/mrain1p/nostalgia-line:dev
+    # :latest tracks main. Use :dev for the bleeding edge, or :v1.0.0 to pin.
+    image: ghcr.io/mrain1p/nostalgia-line:latest
     container_name: nostalgia-line
     ports:
       - "8777:8777"
     volumes:
       # Config, your channels.csv, overrides, exports and the TMDB cache.
       # Keep this mounted and an image upgrade never touches your data.
-      - ./config:/config
+      # Quote the whole mapping if your host path contains spaces.
+      - "./config:/config"
+      # Optional: point at an existing folder of channel artwork, read-only.
+      # Not required — channel logos come from TMDB automatically.
+      # - "/path/to/your/logos:/logos:ro"
     environment:
-      - TZ=America/Chicago
+      # Run as your host user so /config stays editable from the shell.
+      # Find yours with: id -u && id -g
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      # Optional. Without one the app is open on your LAN, which is the default.
+      # - NOSTALGIA_PASSWORD=something-long
       # Optional — the Settings tab writes these into /config/config.yaml for you.
-      # Set them here only if you would rather keep them in compose.
+      # - NOSTALGIA_SOURCE=plex        # plex | jellyfin
       # - PLEX_URL=http://192.168.1.245:32400
       # - PLEX_TOKEN=
+      # - JELLYFIN_URL=http://192.168.1.245:8096
+      # - JELLYFIN_API_KEY=
       # - TMDB_API_KEY=
-    # Match your host user so files written to ./config stay editable.
-    # Find yours with: id -u && id -g
-    # user: "1000:1000"
     restart: unless-stopped

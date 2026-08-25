@@ -164,9 +164,12 @@ def test_export_writes_both_files_and_preserves_every_original_row(result, catal
         written = list(reader)
     assert len(written) == len(defaults) + 2
 
-    original_keys = {r.key() for r in defaults.rows}
-    written_keys = {(int(r[0]), r[2], r[3]) for r in written}
-    assert original_keys <= written_keys, "an original row was lost"
+    # Compare the exact fields, not the dedupe key. The key folds an unparseable
+    # year to "", so a row whose year said "Various" could be rewritten as blank
+    # and still pass - which is exactly the bug this now guards.
+    original_rows = {r.exact() for r in defaults.rows}
+    written_rows = {tuple(r) for r in written}
+    assert original_rows <= written_rows, "an original row was lost or altered"
 
 
 def test_exported_additions_reimport_cleanly(result, catalog, defaults, tmp_path):
@@ -179,3 +182,88 @@ def test_exported_additions_reimport_cleanly(result, catalog, defaults, tmp_path
     reloaded = DefaultAssignments.load(merged)
     assert len(reloaded) == len(defaults) + 2
     assert reloaded.channels_for("New HBO Show", 2024) == {1068}
+
+
+# -- byte-level fidelity to NostalgiaTV's own file -----------------------
+
+
+def test_a_non_numeric_year_is_written_back_verbatim(catalog, defaults, tmp_path):
+    """The stock file uses "Various" for compilation entries like Action Movies.
+    Parsing the year to an int and writing it back destroyed those on 37 rows."""
+    various = [r for r in defaults.rows if r.year_text and not r.year_text.isdigit()]
+    assert various, "the stock file should contain non-numeric years"
+    assert {r.year_text for r in various} == {"Various"}
+
+    merged = tmp_path / "m.csv"
+    export(ScanResult(entries=[]), catalog, defaults, tmp_path / "a.csv", merged)
+    text = merged.read_text(encoding="utf-8")
+    for row in various[:5]:
+        assert f"{row.channel_number},{row.channel_name},{row.title},Various" in text
+
+
+def test_the_merged_file_matches_their_line_endings_and_encoding(catalog, defaults, tmp_path):
+    """Their export is plain UTF-8, bare LF, no BOM. csv.writer defaults to CRLF,
+    which would make every single line differ from the file we were handed."""
+    merged = tmp_path / "m.csv"
+    export(ScanResult(entries=[]), catalog, defaults, tmp_path / "a.csv", merged)
+    raw = merged.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "no BOM"
+    assert b"\r\n" not in raw, "bare LF, not CRLF"
+    assert raw.endswith(b"\n")
+
+
+def test_a_round_trip_through_our_own_loader_is_byte_identical(catalog, defaults, tmp_path):
+    """Export then re-import then export again must not drift."""
+    first = tmp_path / "one.csv"
+    export(ScanResult(entries=[]), catalog, defaults, tmp_path / "a.csv", first)
+
+    from nostalgia_line.channels import DefaultAssignments
+
+    second = tmp_path / "two.csv"
+    export(ScanResult(entries=[]), catalog, DefaultAssignments.load(first), tmp_path / "b.csv", second)
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_awkward_titles_survive_a_round_trip(catalog, defaults, tmp_path):
+    """Commas, quotes and non-ascii all appear in the real file."""
+    from nostalgia_line.cascade import HIGH, Assignment, Resolution
+    from nostalgia_line.channels import DefaultAssignments
+    from nostalgia_line.pipeline import LibraryEntry
+
+    awkward = ["Comma, In Title", 'Quote "Inside" It', "Pokémon Horizons", "WALL·E Redux"]
+    entries = [
+        LibraryEntry(
+            uid=f"tmdb:show:{i}", title=t, year=2024, type="show", section="Shows",
+            episode_count=1, tmdb_id=i,
+            resolution=Resolution(
+                status=STATUS_LINE,
+                assignments=[Assignment(1068, "H.B.Yo Min", "network", HIGH, "test")],
+            ),
+        )
+        for i, t in enumerate(awkward, start=1)
+    ]
+    merged = tmp_path / "m.csv"
+    export(ScanResult(entries=entries), catalog, defaults, tmp_path / "a.csv", merged)
+
+    reloaded = DefaultAssignments.load(merged)
+    titles = {r.title for r in reloaded.rows}
+    for t in awkward:
+        assert t in titles, f"{t!r} did not survive the round trip"
+
+
+def test_preflight_passes_on_a_clean_export(result, catalog, defaults):
+    from nostalgia_line.export import preflight
+
+    report = preflight(result, catalog, defaults)
+    assert report["ok"] is True
+    assert all(c["ok"] for c in report["checks"])
+    names = {c["name"] for c in report["checks"]}
+    assert "Every original row survives verbatim" in names
+    assert "Non-numeric years kept as written" in names
+
+
+def test_preflight_writes_nothing(result, catalog, defaults, tmp_path):
+    from nostalgia_line.export import preflight
+
+    preflight(result, catalog, defaults)
+    assert list(tmp_path.iterdir()) == []

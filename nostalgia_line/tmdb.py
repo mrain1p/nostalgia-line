@@ -7,6 +7,7 @@ and reused across runs. The only field that matters for series routing lives in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from pathlib import Path
 import httpx
 
 API_ROOT = "https://api.themoviedb.org/3"
+
 
 
 class TMDBError(RuntimeError):
@@ -26,6 +28,11 @@ class TMDBSeries:
     tmdb_id: int
     name: str = ""
     networks: list[str] = field(default_factory=list)
+    # network name -> TMDB logo path. Free: the /tv payload already carries it,
+    # so channel artwork costs no extra requests.
+    network_logos: dict[str, str] = field(default_factory=dict)
+    # network name -> TMDB network id, for looking up what really aired there.
+    network_ids: dict[str, int] = field(default_factory=dict)
     genres: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     first_air_date: str = ""
@@ -52,6 +59,8 @@ class TMDBSeries:
             "tmdb_id": self.tmdb_id,
             "name": self.name,
             "networks": self.networks,
+            "network_logos": self.network_logos,
+            "network_ids": self.network_ids,
             "genres": self.genres,
             "keywords": self.keywords,
             "first_air_date": self.first_air_date,
@@ -99,6 +108,22 @@ class TMDBMovie:
     @classmethod
     def from_dict(cls, raw: dict) -> "TMDBMovie":
         return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+
+
+def _cache_schema() -> str:
+    """A token derived from the cached record shapes.
+
+    Deliberately not a hand-maintained integer. Twice now a new field was added
+    without bumping one, and every warm cache went on serving records with the
+    field silently blank - which looks like a broken feature rather than a stale
+    cache. Deriving it from the field names means adding a field invalidates the
+    cache on its own.
+    """
+    names = sorted(TMDBSeries.__dataclass_fields__) + sorted(TMDBMovie.__dataclass_fields__)
+    return hashlib.sha1(",".join(names).encode()).hexdigest()[:10]
+
+
+CACHE_SCHEMA = _cache_schema()
 
 
 class _RateLimiter:
@@ -149,11 +174,22 @@ class TMDBCache:
         return self._data[kind]
 
     def get(self, kind: str, tmdb_id: int) -> dict | None:
-        return self._bucket(kind).get(str(tmdb_id))
+        payload = self._bucket(kind).get(str(tmdb_id))
+        if payload is None:
+            return None
+        if payload.get("_schema") != CACHE_SCHEMA:
+            return None
+        return payload
 
     def put(self, kind: str, tmdb_id: int, payload: dict) -> None:
-        self._bucket(kind)[str(tmdb_id)] = payload
+        self._bucket(kind)[str(tmdb_id)] = {**payload, "_schema": CACHE_SCHEMA}
         self._dirty.add(kind)
+
+    def stale_count(self, kind: str) -> int:
+        """How many entries an upgrade will have to refetch."""
+        return sum(
+            1 for p in self._bucket(kind).values() if p.get("_schema") != CACHE_SCHEMA
+        )
 
     def flush(self) -> None:
         for kind in list(self._dirty):
@@ -171,7 +207,7 @@ class TMDBCache:
         self._dirty.clear()
 
     def stats(self) -> dict[str, int]:
-        return {kind: len(self._bucket(kind)) for kind in ("series", "movie")}
+        return {kind: len(self._bucket(kind)) for kind in ("series", "movie", "network")}
 
 
 class TMDBClient:
@@ -242,6 +278,16 @@ class TMDBClient:
             tmdb_id=tmdb_id,
             name=payload.get("name") or "",
             networks=[n.get("name", "") for n in (payload.get("networks") or []) if n.get("name")],
+            network_logos={
+                n["name"]: n["logo_path"]
+                for n in (payload.get("networks") or [])
+                if n.get("name") and n.get("logo_path")
+            },
+            network_ids={
+                n["name"]: int(n["id"])
+                for n in (payload.get("networks") or [])
+                if n.get("name") and n.get("id")
+            },
             genres=[g.get("name", "") for g in (payload.get("genres") or []) if g.get("name")],
             keywords=[k.get("name", "").lower() for k in keyword_rows if k.get("name")],
             first_air_date=payload.get("first_air_date") or "",
@@ -294,6 +340,46 @@ class TMDBClient:
         if progress:
             progress(done, total)
         return out
+
+    async def network_catalog(self, network_id: int, pages: int = 2) -> list[dict]:
+        """What TMDB says actually aired on a network, most popular first.
+
+        Cached like everything else - a network's back catalogue barely moves,
+        and this is browsing rather than routing.
+        """
+        cached = self.cache.get("network", network_id)
+        if cached is not None:
+            return cached.get("results", [])
+
+        results: list[dict] = []
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for page in range(1, max(1, pages) + 1):
+                payload = await self._get(
+                    client,
+                    "/discover/tv",
+                    with_networks=network_id,
+                    sort_by="popularity.desc",
+                    page=page,
+                    include_null_first_air_dates="false",
+                )
+                if not payload:
+                    break
+                for show in payload.get("results", []):
+                    results.append(
+                        {
+                            "tmdb_id": show.get("id"),
+                            "name": show.get("name", ""),
+                            "poster_path": show.get("poster_path") or "",
+                            "first_air_date": show.get("first_air_date") or "",
+                            "vote_average": show.get("vote_average") or 0,
+                            "overview": (show.get("overview") or "")[:300],
+                        }
+                    )
+                if page >= (payload.get("total_pages") or 1):
+                    break
+        self.cache.put("network", network_id, {"results": results})
+        self.cache.flush()
+        return results
 
     # -- movies (post-1.0) -----------------------------------------------
 

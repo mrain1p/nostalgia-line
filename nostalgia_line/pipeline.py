@@ -16,7 +16,8 @@ from .cascade import (
 )
 from .channels import ChannelCatalog, DefaultAssignments, strip_year
 from .config import Config
-from .plex import MOVIE, SHOW, PlexClient, PlexItem
+from .media import MOVIE, SHOW, MediaItem
+from .sources import build_source, source_libraries
 from .stations import StationBook
 from .tmdb import TMDBCache, TMDBClient
 
@@ -48,10 +49,52 @@ class LibraryEntry:
         return self.resolution.status
 
     @property
+    def mapping_source(self) -> str:
+        """Who decided this placement.
+
+        lineup  - already in the channels.csv you imported
+        auto    - the cascade placed it
+        manual  - you placed it by hand
+        none    - nothing placed it
+        """
+        if self.overridden:
+            return "manual"
+        if self.resolution.status == STATUS_APP:
+            return "lineup"
+        if self.resolution.status == STATUS_LINE:
+            return "auto"
+        return "none"
+
+    @property
     def channels(self) -> list[int]:
         if self.resolution.status == STATUS_APP:
             return list(self.resolution.existing_channels)
         return [a.channel_number for a in self.resolution.assignments]
+
+    _STATE_FIELDS = (
+        "uid", "title", "year", "type", "section", "episode_count", "season_count",
+        "tmdb_id", "overview", "poster_path", "network", "genres", "origin_country",
+        "overridden",
+    )
+
+    def to_state(self) -> dict:
+        """Serialise for the on-disk scan cache. Deliberately separate from
+        to_dict(), which is the API shape and carries derived fields."""
+        state = {name: getattr(self, name) for name in self._STATE_FIELDS}
+        state["resolution"] = self.resolution.to_dict()
+        return state
+
+    @classmethod
+    def from_state(cls, raw: dict) -> "LibraryEntry":
+        kwargs = {name: raw.get(name) for name in cls._STATE_FIELDS}
+        kwargs["genres"] = list(kwargs.get("genres") or [])
+        kwargs["origin_country"] = list(kwargs.get("origin_country") or [])
+        kwargs["episode_count"] = int(kwargs.get("episode_count") or 0)
+        kwargs["season_count"] = int(kwargs.get("season_count") or 0)
+        kwargs["overridden"] = bool(kwargs.get("overridden"))
+        kwargs["overview"] = kwargs.get("overview") or ""
+        kwargs["poster_path"] = kwargs.get("poster_path") or ""
+        return cls(resolution=Resolution.from_dict(raw["resolution"]), **kwargs)
 
     def to_dict(self, catalog: ChannelCatalog) -> dict:
         return {
@@ -70,6 +113,7 @@ class LibraryEntry:
             "poster_path": self.poster_path,
             "overridden": self.overridden,
             "status": self.status,
+            "mapping_source": self.mapping_source,
             "channels": [
                 {"number": n, "name": catalog.name_of(n)} for n in self.channels
             ],
@@ -84,6 +128,9 @@ class ScanResult:
     started_at: float = 0.0
     finished_at: float = 0.0
     errors: list[str] = field(default_factory=list)
+    # TMDB network name -> logo path, harvested during the scan.
+    network_logos: dict[str, str] = field(default_factory=dict)
+    network_ids: dict[str, int] = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
@@ -148,8 +195,106 @@ class ScanResult:
             )
         return rows
 
+    # Bumped whenever the on-disk shape changes, so an old cache is discarded
+    # rather than half-loaded.
+    STATE_VERSION = 1
+
+    def save(self, path) -> None:
+        """Persist the scan so a container restart does not force a re-scan.
+
+        Written gzipped: an 800-title library is a few MB of JSON, most of it
+        overview text.
+        """
+        import gzip
+        import json
+        from pathlib import Path
+
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": self.STATE_VERSION,
+            "sections": self.sections,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "errors": self.errors,
+            "network_logos": self.network_logos,
+            "network_ids": self.network_ids,
+            "entries": [e.to_state() for e in self.entries],
+        }
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        tmp.replace(target)
+
+    @classmethod
+    def load(cls, path) -> "ScanResult | None":
+        """Read a persisted scan back, or None if there is nothing usable."""
+        import gzip
+        import json
+        from pathlib import Path
+
+        source = Path(path)
+        if not source.exists():
+            return None
+        try:
+            with gzip.open(source, "rt", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError, EOFError):
+            return None
+        if payload.get("version") != cls.STATE_VERSION:
+            return None
+        try:
+            entries = [LibraryEntry.from_state(e) for e in payload.get("entries", [])]
+        except (KeyError, TypeError, ValueError):
+            return None
+        return cls(
+            entries=entries,
+            sections=list(payload.get("sections") or []),
+            started_at=float(payload.get("started_at") or 0.0),
+            finished_at=float(payload.get("finished_at") or 0.0),
+            errors=list(payload.get("errors") or []),
+            network_logos=dict(payload.get("network_logos") or {}),
+            network_ids={k: int(v) for k, v in (payload.get("network_ids") or {}).items()},
+        )
+
     def review_queue(self) -> list[LibraryEntry]:
         return [e for e in self.entries if e.resolution.needs_review and not e.overridden]
+
+    def channel_titles(self, number: int, catalog: ChannelCatalog) -> list[dict]:
+        """Every library title currently placed on a channel."""
+        rows = []
+        for entry in self.entries:
+            if number in entry.channels:
+                primary = entry.resolution.primary
+                rows.append(
+                    {
+                        "uid": entry.uid,
+                        "title": entry.title,
+                        "year": entry.year,
+                        "episode_count": entry.episode_count,
+                        "season_count": entry.season_count,
+                        "network": entry.network,
+                        "poster_path": entry.poster_path,
+                        "tmdb_id": entry.tmdb_id,
+                        "mapping_source": entry.mapping_source,
+                        "needs_review": entry.resolution.needs_review,
+                        "confidence": entry.resolution.confidence,
+                        # A lineup title never ran through the cascade, so it has
+                        # no rule to cite. Saying where it came from beats a blank.
+                        "reason": (
+                            primary.reason
+                            if primary
+                            else "already on this channel in your channels.csv"
+                        ),
+                        "other_channels": [
+                            {"number": n, "name": catalog.name_of(n)}
+                            for n in entry.channels
+                            if n != number
+                        ],
+                    }
+                )
+        rows.sort(key=lambda r: r["title"].casefold())
+        return rows
 
     def network_rollup(self, network_map, orphan_map, catalog: ChannelCatalog) -> list[dict]:
         """Every TMDB network in the library, with where it currently routes.
@@ -229,7 +374,7 @@ def _countries(entries: list["LibraryEntry"]) -> list[str]:
     return sorted(out)
 
 
-def _episode_count(item: PlexItem, tmdb_record) -> int:
+def _episode_count(item: MediaItem, tmdb_record) -> int:
     if item.episode_count:
         return item.episode_count
     return getattr(tmdb_record, "episode_count", 0) or 0
@@ -255,11 +400,11 @@ async def run_scan(
 
     types = (SHOW, MOVIE) if include_movies else (SHOW,)
 
-    report("plex", 0, 0)
-    plex = PlexClient(cfg.plex.url, cfg.plex.token)
-    items, sections = await plex.fetch_library(cfg.plex.libraries or None, types=types)
+    source = build_source(cfg)
+    report(source.name, 0, 0)
+    items, sections = await source.fetch_library(source_libraries(cfg) or None, types=types)
     result.sections = [s.title for s in sections]
-    report("plex", len(items), len(items))
+    report(source.name, len(items), len(items))
 
     cache = TMDBCache(cfg.path(cfg.data.cache_dir))
     tmdb = TMDBClient(cfg.tmdb.api_key, cache, rate_limit=cfg.tmdb.rate_limit)
@@ -286,6 +431,10 @@ async def run_scan(
         else:
             record = movie_map.get(item.tmdb_id) if item.tmdb_id else None
             resolution = cascade.resolve_movie(base_title, year, record)
+
+        if record is not None:
+            result.network_logos.update(getattr(record, "network_logos", None) or {})
+            result.network_ids.update(getattr(record, "network_ids", None) or {})
 
         entry = LibraryEntry(
             uid=item.uid,
