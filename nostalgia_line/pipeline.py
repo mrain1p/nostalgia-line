@@ -130,6 +130,7 @@ class ScanResult:
     errors: list[str] = field(default_factory=list)
     # TMDB network name -> logo path, harvested during the scan.
     network_logos: dict[str, str] = field(default_factory=dict)
+    network_ids: dict[str, int] = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
@@ -217,6 +218,7 @@ class ScanResult:
             "finished_at": self.finished_at,
             "errors": self.errors,
             "network_logos": self.network_logos,
+            "network_ids": self.network_ids,
             "entries": [e.to_state() for e in self.entries],
         }
         tmp = target.with_suffix(target.suffix + ".tmp")
@@ -252,6 +254,7 @@ class ScanResult:
             finished_at=float(payload.get("finished_at") or 0.0),
             errors=list(payload.get("errors") or []),
             network_logos=dict(payload.get("network_logos") or {}),
+            network_ids={k: int(v) for k, v in (payload.get("network_ids") or {}).items()},
         )
 
     def review_queue(self) -> list[LibraryEntry]:
@@ -431,6 +434,7 @@ async def run_scan(
 
         if record is not None:
             result.network_logos.update(getattr(record, "network_logos", None) or {})
+            result.network_ids.update(getattr(record, "network_ids", None) or {})
 
         entry = LibraryEntry(
             uid=item.uid,

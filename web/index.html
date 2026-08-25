@@ -451,11 +451,17 @@
     </div>
   </header>
   <div class="toolbar">
+    <div class="segmented" role="tablist">
+      <button class="seg is-on" id="seg-mine" role="tab">In your library</button>
+      <button class="seg" id="seg-network" role="tab">On the real station</button>
+    </div>
     <input type="search" id="channel-q" placeholder="Filter titles">
     <span class="spacer"></span>
     <button class="btn btn-small btn-ghost" id="channel-close">Close</button>
   </div>
   <div id="channel-body" class="channel-list"></div>
+  <div id="channel-network" class="channel-list is-hidden"></div>
+  <p id="channel-network-note" class="hint" style="margin-top:10px"></p>
 </dialog>
 
 <!-- assignment dialog -->

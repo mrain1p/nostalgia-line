@@ -813,12 +813,81 @@ document.addEventListener('keydown', (event) => {
 /* ── channel contents ─────────────────────────────────────── */
 let channelRows = [];
 let channelData = null;
+let channelNumber = null;
+let networkCatalog = null;
+
+function showChannelPane(which) {
+  const mine = which === 'mine';
+  $('seg-mine').classList.toggle('is-on', mine);
+  $('seg-network').classList.toggle('is-on', !mine);
+  $('channel-body').classList.toggle('is-hidden', !mine);
+  $('channel-network').classList.toggle('is-hidden', mine);
+  $('channel-q').placeholder = mine ? 'Filter titles' : 'Filter the station catalogue';
+}
+
+$('seg-mine').addEventListener('click', () => { showChannelPane('mine'); renderChannelRows(); });
+$('seg-network').addEventListener('click', async () => {
+  showChannelPane('network');
+  if (networkCatalog === null) await loadNetworkCatalog();
+  else renderNetworkCatalog();
+});
+
+/** What really aired on the station this channel parodies, and what you lack. */
+async function loadNetworkCatalog() {
+  $('channel-network').innerHTML = '<p class="empty">Asking TMDB what aired here…</p>';
+  try {
+    networkCatalog = await api(`/api/channels/${channelNumber}/network-catalog`);
+    renderNetworkCatalog();
+  } catch (err) {
+    networkCatalog = null;
+    $('channel-network').innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+  }
+}
+
+function renderNetworkCatalog() {
+  const data = networkCatalog;
+  if (!data) return;
+  if (!data.titles.length) {
+    $('channel-network').innerHTML = `<p class="empty">${esc(data.note || 'Nothing to show.')}</p>`;
+    $('channel-network-note').textContent = '';
+    return;
+  }
+  const needle = $('channel-q').value.trim().toLowerCase();
+  const rows = data.titles.filter((t) => !needle || t.name.toLowerCase().includes(needle));
+
+  $('channel-network').innerHTML = `<div class="net-grid">${rows.map((t) => {
+    const cls = !t.in_library ? 'missing' : (t.elsewhere ? 'have' : 'have');
+    const badge = !t.in_library
+      ? '<span class="net-badge missing">not in library</span>'
+      : t.elsewhere
+        ? `<span class="net-badge elsewhere" title="You have it, on ${t.channels.map((c) => c.name).join(', ')}">on ${t.channels[0]?.number ?? '?'}</span>`
+        : '<span class="net-badge have">here</span>';
+    const art = t.poster_path
+      ? `<img loading="lazy" decoding="async" alt="" src="${esc(posterUrl(t.poster_path, 'w185'))}">`
+      : '<div class="ph"></div>';
+    const open = t.uid ? ` data-detail="${esc(t.uid)}"` : '';
+    return `<div class="net-card ${cls}"${open} style="${t.uid ? 'cursor:pointer' : ''}">
+      ${art}${badge}
+      <div class="n">${esc(t.name)}</div>
+      <div class="y">${esc((t.first_air_date || '').slice(0, 4) || '—')}</div>
+    </div>`;
+  }).join('')}</div>`;
+
+  $('channel-network-note').innerHTML =
+    `Top ${data.counts.total} shows TMDB lists for <strong>${esc(data.network)}</strong> — ` +
+    `you have <strong>${data.counts.in_library}</strong>, missing <strong>${data.counts.missing}</strong>. ` +
+    `Popularity order, so it is a sense of the station rather than its full history.`;
+}
+
 
 async function openChannel(number) {
   const data = await api(`/api/channels/${number}/titles`).catch(() => null);
   if (!data) return;
   channelData = data;
   channelRows = data.titles;
+  channelNumber = number;
+  networkCatalog = null;
+  showChannelPane('mine');
   $('channel-art').src = `${logoUrl(number)}?v=${state.logoVersion}`;
   $('channel-title').textContent = `${data.channel.number} · ${data.channel.name}`;
   $('channel-sub').textContent =
@@ -861,7 +930,10 @@ function renderChannelRows() {
     (body || '<p class="empty">Nothing from your library on this channel yet.</p>') + absent;
 }
 
-$('channel-q').addEventListener('input', renderChannelRows);
+$('channel-q').addEventListener('input', () => {
+  if ($('channel-network').classList.contains('is-hidden')) renderChannelRows();
+  else renderNetworkCatalog();
+});
 $('channel-close').addEventListener('click', () => $('channel-dialog').close());
 
 $('channel-table').addEventListener('click', (event) => {

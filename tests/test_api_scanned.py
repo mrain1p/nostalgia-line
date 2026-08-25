@@ -755,3 +755,54 @@ def test_channel_contents_show_a_titles_other_channels(client):
 
 def test_channel_contents_404_for_an_unknown_channel(client):
     assert client.get("/api/channels/4242/titles").status_code == 404
+
+
+# -- what really aired on the station ------------------------------------
+
+
+def test_network_catalog_marks_what_you_already_have(client, monkeypatch):
+    """The point of the view: separate what the station ran from what you own."""
+    state = client.server_module.state
+    state.result.network_ids = {"HBO": 49}
+
+    async def fake_catalog(self, network_id, pages=2):
+        assert network_id == 49
+        return [
+            {"tmdb_id": 1, "name": "Alpha Show", "poster_path": "/a.jpg",
+             "first_air_date": "2020-01-01", "vote_average": 8.1, "overview": ""},
+            {"tmdb_id": 999, "name": "A Show You Lack", "poster_path": "/b.jpg",
+             "first_air_date": "2019-01-01", "vote_average": 7.4, "overview": ""},
+            {"tmdb_id": 2, "name": "Beta Show", "poster_path": "/c.jpg",
+             "first_air_date": "2021-01-01", "vote_average": 7.9, "overview": ""},
+        ]
+
+    monkeypatch.setattr(
+        "nostalgia_line.server.TMDBClient.network_catalog", fake_catalog, raising=True
+    )
+    body = client.get("/api/channels/1068/network-catalog").json()
+
+    assert body["network"] == "HBO"
+    assert body["counts"] == {"total": 3, "in_library": 2, "missing": 1}
+
+    rows = {t["name"]: t for t in body["titles"]}
+    assert rows["Alpha Show"]["in_library"] is True
+    assert rows["Alpha Show"]["uid"] == "tmdb:show:1"
+    assert rows["Alpha Show"]["elsewhere"] is False, "it is on 1068 already"
+    assert rows["A Show You Lack"]["in_library"] is False
+    assert rows["A Show You Lack"]["uid"] is None
+    # Beta Show is in the library but assigned to Netflicks, not this channel.
+    assert rows["Beta Show"]["in_library"] is True
+    assert rows["Beta Show"]["elsewhere"] is True
+    state.result.network_ids = {}
+
+
+def test_network_catalog_says_so_when_no_station_maps_here(client):
+    state = client.server_module.state
+    state.result.network_ids = {}
+    body = client.get("/api/channels/1099/network-catalog").json()
+    assert body["titles"] == []
+    assert "no real-world station" in body["note"]
+
+
+def test_network_catalog_404s_for_an_unknown_channel(client):
+    assert client.get("/api/channels/4242/network-catalog").status_code == 404

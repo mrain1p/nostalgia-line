@@ -775,6 +775,72 @@ def channel_titles(number: int) -> dict:
     }
 
 
+@app.get("/api/channels/{number}/network-catalog")
+async def channel_network_catalog(number: int, pages: int = 2) -> dict:
+    """What actually aired on the real network this channel stands in for.
+
+    Answers the question the channel view cannot: not just what you have, but
+    what the station itself ran - and therefore what you are missing.
+    """
+    channel = state.catalog.get(number)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"no channel {number}")
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+
+    network_map = _network_map_with_overrides()
+    networks = [
+        (name, nid)
+        for name, nid in state.result.network_ids.items()
+        if (mapped := network_map.get(name)) and mapped[0] == number
+    ]
+    if not networks:
+        return {
+            "channel": {"number": channel.number, "name": channel.name},
+            "networks": [],
+            "titles": [],
+            "note": (
+                "No TMDB network in your library maps to this channel, so there is "
+                "no real-world station to list."
+            ),
+        }
+
+    # Prefer the plainest name when several map here (HBO over HBO Max over Max).
+    name, network_id = min(networks, key=lambda pair: len(pair[0]))
+    try:
+        cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
+        client = TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit)
+        catalog = await client.network_catalog(network_id, pages=pages)
+    except TMDBError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    mine = {e.tmdb_id: e for e in state.result.entries if e.tmdb_id}
+    titles = []
+    for show in catalog:
+        entry = mine.get(show["tmdb_id"])
+        titles.append(
+            {
+                **show,
+                "in_library": entry is not None,
+                "uid": entry.uid if entry else None,
+                "channels": (
+                    [{"number": n, "name": state.catalog.name_of(n)} for n in entry.channels]
+                    if entry
+                    else []
+                ),
+                "elsewhere": bool(entry and number not in entry.channels),
+            }
+        )
+    have = sum(1 for t in titles if t["in_library"])
+    return {
+        "channel": {"number": channel.number, "name": channel.name},
+        "networks": [n for n, _ in networks],
+        "network": name,
+        "titles": titles,
+        "counts": {"total": len(titles), "in_library": have, "missing": len(titles) - have},
+    }
+
+
 @app.get("/api/review")
 def review() -> dict:
     if state.result is None:

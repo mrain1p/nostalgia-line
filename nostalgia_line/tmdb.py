@@ -35,6 +35,8 @@ class TMDBSeries:
     # network name -> TMDB logo path. Free: the /tv payload already carries it,
     # so channel artwork costs no extra requests.
     network_logos: dict[str, str] = field(default_factory=dict)
+    # network name -> TMDB network id, for looking up what really aired there.
+    network_ids: dict[str, int] = field(default_factory=dict)
     genres: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     first_air_date: str = ""
@@ -62,6 +64,7 @@ class TMDBSeries:
             "name": self.name,
             "networks": self.networks,
             "network_logos": self.network_logos,
+            "network_ids": self.network_ids,
             "genres": self.genres,
             "keywords": self.keywords,
             "first_air_date": self.first_air_date,
@@ -192,7 +195,7 @@ class TMDBCache:
         self._dirty.clear()
 
     def stats(self) -> dict[str, int]:
-        return {kind: len(self._bucket(kind)) for kind in ("series", "movie")}
+        return {kind: len(self._bucket(kind)) for kind in ("series", "movie", "network")}
 
 
 class TMDBClient:
@@ -268,6 +271,11 @@ class TMDBClient:
                 for n in (payload.get("networks") or [])
                 if n.get("name") and n.get("logo_path")
             },
+            network_ids={
+                n["name"]: int(n["id"])
+                for n in (payload.get("networks") or [])
+                if n.get("name") and n.get("id")
+            },
             genres=[g.get("name", "") for g in (payload.get("genres") or []) if g.get("name")],
             keywords=[k.get("name", "").lower() for k in keyword_rows if k.get("name")],
             first_air_date=payload.get("first_air_date") or "",
@@ -320,6 +328,46 @@ class TMDBClient:
         if progress:
             progress(done, total)
         return out
+
+    async def network_catalog(self, network_id: int, pages: int = 2) -> list[dict]:
+        """What TMDB says actually aired on a network, most popular first.
+
+        Cached like everything else - a network's back catalogue barely moves,
+        and this is browsing rather than routing.
+        """
+        cached = self.cache.get("network", network_id)
+        if cached is not None:
+            return cached.get("results", [])
+
+        results: list[dict] = []
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for page in range(1, max(1, pages) + 1):
+                payload = await self._get(
+                    client,
+                    "/discover/tv",
+                    with_networks=network_id,
+                    sort_by="popularity.desc",
+                    page=page,
+                    include_null_first_air_dates="false",
+                )
+                if not payload:
+                    break
+                for show in payload.get("results", []):
+                    results.append(
+                        {
+                            "tmdb_id": show.get("id"),
+                            "name": show.get("name", ""),
+                            "poster_path": show.get("poster_path") or "",
+                            "first_air_date": show.get("first_air_date") or "",
+                            "vote_average": show.get("vote_average") or 0,
+                            "overview": (show.get("overview") or "")[:300],
+                        }
+                    )
+                if page >= (payload.get("total_pages") or 1):
+                    break
+        self.cache.put("network", network_id, {"results": results})
+        self.cache.flush()
+        return results
 
     # -- movies (post-1.0) -----------------------------------------------
 

@@ -537,3 +537,35 @@ ul.mini { margin: 6px 0 0; padding-left: 18px; color: var(--ink-3); font-size: 1
 .src-none   { color: var(--red); border-color: rgba(255,107,107,.45); }
 .channel-absent { padding: 12px; font-size: 12px; color: var(--ink-3); line-height: 1.6; }
 tbody tr.is-clickable { cursor: pointer; }
+
+/* ── segmented control ────────────────────────────────────── */
+.segmented { display: inline-flex; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 2px; }
+.seg {
+  background: none; border: none; color: var(--ink-3); cursor: pointer;
+  padding: 6px 12px; border-radius: 7px; font: 500 12.5px/1 var(--sans); white-space: nowrap;
+}
+.seg:hover { color: var(--ink); }
+.seg.is-on { background: var(--surface-3); color: var(--accent); }
+
+/* ── real-station catalogue ───────────────────────────────── */
+.net-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr));
+  gap: 12px; padding: 12px;
+}
+.net-card { position: relative; }
+.net-card img, .net-card .ph {
+  width: 100%; aspect-ratio: 2 / 3; object-fit: cover; display: block;
+  border-radius: var(--r-sm); background: var(--surface-3); border: 1px solid var(--line);
+}
+.net-card.have img { border-color: var(--accent-deep); box-shadow: 0 0 0 2px var(--accent-glow); }
+.net-card.missing img, .net-card.missing .ph { opacity: .42; }
+.net-card .n { font-size: 11.5px; margin-top: 6px; line-height: 1.35; }
+.net-card .y { font: 400 10.5px/1 var(--mono); color: var(--ink-3); margin-top: 3px; }
+.net-badge {
+  position: absolute; top: 6px; right: 6px;
+  font: 500 9.5px/1 var(--mono); text-transform: uppercase; letter-spacing: .04em;
+  padding: 3px 6px; border-radius: 4px; border: 1px solid;
+}
+.net-badge.have { color: var(--accent); border-color: var(--accent-deep); background: rgba(11,14,19,.85); }
+.net-badge.elsewhere { color: var(--amber); border-color: var(--amber); background: rgba(11,14,19,.85); }
+.net-badge.missing { color: var(--ink-3); border-color: var(--line-strong); background: rgba(11,14,19,.85); }

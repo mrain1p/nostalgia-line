@@ -106,6 +106,8 @@ def test_cache_survives_a_corrupt_file(tmp_path):
 def test_cache_clear_removes_everything(tmp_path):
     cache = TMDBCache(tmp_path)
     cache.put("series", 1, {"tmdb_id": 1})
+    cache.put("network", 49, {"results": []})
     cache.flush()
     cache.clear()
-    assert TMDBCache(tmp_path).stats() == {"series": 0, "movie": 0}
+    assert set(TMDBCache(tmp_path).stats().values()) == {0}
+    assert "network" in TMDBCache(tmp_path).stats()
