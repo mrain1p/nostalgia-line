@@ -1,6 +1,5 @@
-# Nostalgia Line — pull and run. No build step.
+# Nostalgia Line — pull and run. No build step, no login.
 #
-#   docker login ghcr.io -u mrain1p        # one time, see README
 #   docker compose pull && docker compose up -d
 #
 # Then open http://localhost:8777 and fill in the Settings tab.
@@ -8,7 +7,9 @@
 
 services:
   nostalgia-line:
-    image: ghcr.io/mrain1p/nostalgia-line:latest
+    # Images are published from the `dev` branch. There is no :latest yet —
+    # `main` is the stable branch and deliberately does not build.
+    image: ghcr.io/mrain1p/nostalgia-line:dev
     container_name: nostalgia-line
     ports:
       - "8777:8777"

@@ -1,7 +1,7 @@
 # Nostalgia Line
 
-A companion app for [NostalgiaTV](https://github.com/) that puts every show in your
-Plex library on a retro TV channel — and shows you the ones it can't place.
+A companion app for **NostalgiaTV** that puts every show in your Plex library on a
+retro TV channel — and shows you the ones it can't place.
 
 NostalgiaTV ships a default `channels.csv` assigning ~4,200 well-known titles to
 channels. Anything else in your library plays nowhere, and there's no way to see
@@ -71,17 +71,8 @@ network from a title.**
 
 ### Docker (recommended)
 
-The image is published to GitHub Container Registry by CI. While this repo is
-**private** the package is private too, so Docker needs to log in once.
-
-Create a token with the `read:packages` scope at
-<https://github.com/settings/tokens> (classic), then:
-
-```bash
-echo YOUR_TOKEN | docker login ghcr.io -u mrain1p --password-stdin
-```
-
-Grab the compose file and start it:
+The image is published to GitHub Container Registry from the `dev` branch, for
+`linux/amd64` and `linux/arm64`. It's public — no login needed.
 
 ```bash
 curl -O https://raw.githubusercontent.com/mrain1p/nostalgia-line/main/docker-compose.yml
@@ -90,6 +81,10 @@ curl -O https://raw.githubusercontent.com/mrain1p/nostalgia-line/main/docker-com
 ```bash
 docker compose pull && docker compose up -d
 ```
+
+> **Tags:** `:dev` is the only published tag today. `main` is the stable branch
+> and deliberately does not build, so `:latest` does not exist yet. Pin to a
+> commit with `:sha-<short>` if you want to stay put across `dev` pushes.
 
 Then open <http://localhost:8777> and fill in the Settings tab. Everything —
 Plex URL, token, TMDB key, routing mode, custom stations — is configured in the
@@ -390,6 +385,26 @@ nostalgia_line/
   server.py     FastAPI app
 web/            single-page UI, no build step
 ```
+
+## Branches
+
+| Branch | What it is |
+|---|---|
+| `dev` | Where work happens. Every push builds and publishes `ghcr.io/mrain1p/nostalgia-line:dev`. |
+| `main` | Stable. Does not build. Merged into deliberately. |
+
+Aim pull requests at `dev`. CI (tests on Python 3.11–3.13, plus a container
+build-and-boot check) runs on both branches.
+
+## Acknowledgements
+
+Nostalgia Line is an unofficial companion tool. **NostalgiaTV** is a separate
+project — the 113-channel lineup, the parody channel names (LACKLUSTER, H.B.Yo
+Min, Munchyroll and the rest) and the default `channels.csv` shipped in `data/`
+are its work, not mine. They're bundled so this tool routes correctly out of the
+box against a stock install. All credit for that lineup goes to NostalgiaTV; if
+you maintain it and would rather this repo not redistribute the file, open an
+issue and I'll swap it for a first-run download.
 
 ## A note on access
 

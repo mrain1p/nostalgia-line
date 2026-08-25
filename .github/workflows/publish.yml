@@ -1,9 +1,10 @@
 name: Publish image
 
+# Images are published from `dev` only. `main` is the stable branch and does not
+# build - nothing reaches users until it is merged and released deliberately.
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches: [dev]
   workflow_dispatch:
 
 jobs:
@@ -31,8 +32,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
+            type=raw,value=dev
             type=sha,format=short
 
       - name: Build and push
