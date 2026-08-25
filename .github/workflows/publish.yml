@@ -2,13 +2,32 @@ name: Publish image
 
 # Images are published from `dev` only. `main` is the stable branch and does not
 # build - nothing reaches users until it is merged and released deliberately.
+#
+# Nothing is pushed until the test suite and the container check both pass. An
+# earlier revision ran these in parallel and shipped an image whose PUID handling
+# was broken.
 on:
   push:
     branches: [dev]
   workflow_dispatch:
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+      - run: docker build -t nostalgia-line:verify .
+      - name: Boots, seeds /config, honours PUID/PGID
+        run: sh scripts/verify_container.sh nostalgia-line:verify 8779
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
