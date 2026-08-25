@@ -84,22 +84,32 @@ def build_addition_rows(
 def _write(path: Path, rows: list[DefaultRow]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
+    # NostalgiaTV's own export is plain UTF-8 with bare LF and no BOM. csv.writer
+    # defaults to CRLF, which would make every line differ from the file we were
+    # handed - so match it exactly rather than hoping their parser is tolerant.
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
-        writer = csv.writer(fh)
+        writer = csv.writer(fh, lineterminator="\n")
         writer.writerow(HEADER)
         writer.writerows(row.as_csv_row() for row in rows)
     tmp.replace(path)
 
 
 def assert_additive(original: list[DefaultRow], merged: list[DefaultRow]) -> None:
-    """Spec S7: verify on write that the original row set is a subset of the output."""
-    original_keys = {row.key() for row in original}
-    merged_keys = {row.key() for row in merged}
-    missing = original_keys - merged_keys
+    """Spec S7: verify on write that every original row survives, verbatim.
+
+    Compares the exact field values rather than the dedupe key. The key folds an
+    unparseable year to "", so a row whose year said ``Various`` could be
+    rewritten as blank and still satisfy a key-based check - which is precisely
+    what was happening to 37 rows of the stock file.
+    """
+    original_rows = {row.exact() for row in original}
+    merged_rows = {row.exact() for row in merged}
+    missing = original_rows - merged_rows
     if missing:
         sample = sorted(missing)[:5]
         raise IntegrityError(
-            f"{len(missing)} original rows would be lost. Refusing to write. First: {sample}"
+            f"{len(missing)} original rows would be lost or altered. Refusing to write. "
+            f"First: {sample}"
         )
 
 

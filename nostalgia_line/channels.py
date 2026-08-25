@@ -50,23 +50,35 @@ class Channel:
 
 @dataclass(frozen=True)
 class DefaultRow:
-    """One row of the user's shipped channels.csv. Authoritative and immutable."""
+    """One row of the user's shipped channels.csv. Authoritative and immutable.
+
+    ``release_year`` is the parsed year used for matching; ``year_text`` is what
+    the file actually said. They differ more often than you would expect - the
+    stock file uses ``Various`` for compilation entries like "Action Movies" -
+    and writing back the parsed value would quietly destroy those.
+    """
 
     channel_number: int
     channel_name: str
     title: str
     release_year: int | None
+    year_text: str = ""
 
     def as_csv_row(self) -> list[str]:
-        return [
-            str(self.channel_number),
-            self.channel_name,
-            self.title,
-            "" if self.release_year is None else str(self.release_year),
-        ]
+        year = self.year_text
+        if not year:
+            year = "" if self.release_year is None else str(self.release_year)
+        return [str(self.channel_number), self.channel_name, self.title, year]
 
     def key(self) -> tuple[int, str, str]:
+        """Identity for dedupe. Uses the parsed year so a new row for the same
+        title and year is recognised as a duplicate."""
         return (self.channel_number, self.title, str(self.release_year or ""))
+
+    def exact(self) -> tuple[str, ...]:
+        """Every field as it will be written. The integrity check compares these,
+        because key() is lossy and would not notice a rewritten year."""
+        return tuple(self.as_csv_row())
 
 
 class ChannelCatalog:
@@ -173,6 +185,7 @@ class DefaultAssignments:
                         channel_name=(row["Channel Name"] or "").strip(),
                         title=(row["Title"] or "").strip(),
                         release_year=int(year_raw) if year_raw.isdigit() else None,
+                        year_text=year_raw,
                     )
                 )
         return cls(rows)
