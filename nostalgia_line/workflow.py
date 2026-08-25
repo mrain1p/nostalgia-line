@@ -75,6 +75,7 @@ def build(
     baseline_at: float | None,
     lineup_rows: int,
     no_tmdb_id: int = 0,
+    new_since_scan: int = 0,
 ) -> Workflow:
     """Work out which step the user is on, from state the app already tracks."""
     steps = [
@@ -140,6 +141,10 @@ def build(
         by_key["scan"].detail = (
             f"{scan_stats['total']} titles, {scan_stats['coverage_pct']}% placed."
         )
+        if new_since_scan:
+            by_key["scan"].detail += (
+                f" {new_since_scan} title(s) are new or moved since the previous scan."
+            )
         if no_tmdb_id:
             by_key["scan"].detail += (
                 f" {no_tmdb_id} have no TMDB id in your media server and can never route."
@@ -198,6 +203,16 @@ def build(
         for step in steps:
             if step.state == TODO:
                 step.state = CURRENT
+                break
+
+    # New titles are waiting: when a later scan re-opens review or export, say
+    # what re-opened it - otherwise a step that was done yesterday looks broken.
+    if new_since_scan:
+        for key in ("review", "export"):
+            if by_key[key].state == CURRENT:
+                by_key[key].detail += (
+                    f" The last scan added or moved {new_since_scan} title(s)."
+                )
                 break
 
     return Workflow(steps)

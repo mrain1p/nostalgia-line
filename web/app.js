@@ -28,6 +28,15 @@ function ago(epochSeconds) {
   return 'just now';
 }
 
+function until(epochSeconds) {
+  const secs = Math.max(0, epochSeconds - Date.now() / 1000);
+  const steps = [[86400, 'd'], [3600, 'h'], [60, 'm']];
+  for (const [size, label] of steps) {
+    if (secs >= size) return `in ${Math.floor(secs / size)}${label}`;
+  }
+  return 'any minute';
+}
+
 const splitList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean);
 
 const state = {
@@ -181,7 +190,9 @@ function renderProvenance(status) {
   const sep = '<span class="prov-sep"></span>';
 
   const scanAge = status.scan_at ? ago(status.scan_at) : null;
-  const scanStale = status.scan_at && (Date.now() / 1000 - status.scan_at) > 86400;
+  // A scan is only "old" when nothing is set to refresh it by itself.
+  const scanStale = status.scan_at && (Date.now() / 1000 - status.scan_at) > 86400
+    && !status.schedule?.enabled;
   const parts = [
     `<span class="prov-item ${scanStale ? 'is-dirty' : ''}">Scan <b>${
       scanAge ? esc(scanAge) : 'none'}</b>${scanStale ? ' — may be out of date' : ''}</span>`,
@@ -190,15 +201,42 @@ function renderProvenance(status) {
     `<span class="prov-item ${changed ? 'is-dirty' : ''}">${
       changed ? `<b>${changed}</b> change${changed === 1 ? '' : 's'} pending` : 'No pending changes'}</span>`,
   ];
+  const delta = status.stats?.delta;
+  if (delta?.tracked && (delta.new || delta.changed || delta.departed)) {
+    const bits = [];
+    if (delta.new) bits.push(`<b>${delta.new}</b> new`);
+    if (delta.changed) bits.push(`<b>${delta.changed}</b> moved`);
+    if (delta.departed) bits.push(`<b>${delta.departed}</b> gone`);
+    parts.push(`<span class="prov-item is-clickable" id="prov-delta"
+      title="Compared with the scan before this one — click to see them">${bits.join(', ')} since last scan</span>`);
+  }
   if (pending.held_for_review) {
     parts.push(`<span class="prov-item">${pending.held_for_review} held for review</span>`);
   }
   parts.push(`<span class="prov-item">Last export <b>${esc(ago(status.last_export_at))}</b></span>`);
+  if (status.schedule?.enabled) {
+    const due = status.schedule.next_due_at;
+    const when = status.scanning ? 'scanning now'
+      : status.schedule.waiting_on_quiet ? 'waiting for quiet hours to end'
+      : due && due > Date.now() / 1000 ? esc(until(due))
+      : 'due any minute';
+    parts.push(`<span class="prov-item" title="Scheduled scans are on — every ${
+      esc(status.schedule.interval_hours)}h">Auto-scan <b>${when}</b></span>`);
+  }
   if (status.posters?.count) {
     parts.push(`<span class="prov-item">${status.posters.count} posters cached</span>`);
   }
   el.innerHTML = parts.join(sep);
 }
+
+$('provenance').addEventListener('click', (event) => {
+  if (!event.target.closest('#prov-delta')) return;
+  $('since-filter').checked = true;
+  state.offset = 0;
+  showTab('library');
+  loadLibrary();
+  refreshStatus();
+});
 
 /* Each tile is also the filter for what it counts - the number you are looking
    at is usually the set you want to work on next. */
@@ -208,13 +246,14 @@ const STAT_TILES = [
   { label: 'Placed by Line', key: 'assigned_by_line', cls: 'good', filter: { status: 'assigned' } },
   { label: 'Unassigned', key: 'unassigned', cls: 'bad', filter: { status: 'unassigned' } },
   { label: 'Needs review', key: 'needs_review', cls: 'warn', filter: { review: true } },
+  { label: 'New since scan', key: 'since_last_scan', cls: 'good', filter: { since: true } },
   { label: 'Coverage', key: 'coverage_pct', cls: '', suffix: '%' },
 ];
 
 function activeTileIndex() {
   const status = $('status-filter').value;
-  const review = $('review-filter').checked;
-  if (review) return 4;
+  if ($('since-filter').checked) return STAT_TILES.findIndex((t) => t.filter?.since);
+  if ($('review-filter').checked) return STAT_TILES.findIndex((t) => t.filter?.review);
   return STAT_TILES.findIndex((t, i) => i > 0 && t.filter && t.filter.status === status && status);
 }
 
@@ -242,6 +281,7 @@ $('stats').addEventListener('click', (event) => {
   const alreadyOn = tile.classList.contains('is-on');
   $('status-filter').value = alreadyOn ? '' : (spec.filter.status || '');
   $('review-filter').checked = alreadyOn ? false : Boolean(spec.filter.review);
+  $('since-filter').checked = alreadyOn ? false : Boolean(spec.filter.since);
   state.offset = 0;
   showTab('library');
   loadLibrary();
@@ -358,12 +398,14 @@ function activeFilterCount() {
   if ($('q').value.trim()) n += 1;
   if ($('status-filter').value) n += 1;
   if ($('review-filter').checked) n += 1;
+  if ($('since-filter').checked) n += 1;
   if (state.networkFilter) n += 1;
   return n;
 }
 
 function syncFilterChrome() {
-  const hidden = HIDDEN_FILTERS.filter((id) => $(id).value).length;
+  const hidden = HIDDEN_FILTERS.filter((id) => $(id).value).length
+    + ($('since-filter').checked ? 1 : 0);
   $('more-count').textContent = hidden || '';
   $('clear-filters').classList.toggle('is-hidden', activeFilterCount() === 0);
 }
@@ -388,6 +430,7 @@ function libraryParams(extra = {}) {
   if ($('type-filter').value) params.set('item_type', $('type-filter').value);
   if ($('section-filter').value) params.set('section', $('section-filter').value);
   if ($('review-filter').checked) params.set('review_only', 'true');
+  if ($('since-filter').checked) params.set('since_last_scan', 'true');
   if (state.networkFilter) params.set('network', state.networkFilter);
   return params;
 }
@@ -471,6 +514,11 @@ function rowHtml(item) {
     || (item.mapping_source === 'lineup' ? 'already in your channels.csv' : '');
   const flag = item.needs_review ? `<span class="flag" title="${esc(item.review_reason)}">⚑</span>` : '';
   const over = item.overridden ? '<span class="overridden" title="assigned by hand">✎</span>' : '';
+  const delta = item.delta === 'new'
+    ? '<span class="delta delta-new" title="Not in the previous scan">new</span>'
+    : item.delta === 'changed'
+      ? '<span class="delta delta-changed" title="Routed differently than in the previous scan">moved</span>'
+      : '';
   const checked = state.selected.has(item.uid) ? 'checked' : '';
   const net = item.network
     ? `<button class="btn-link" data-network="${esc(item.network)}">${esc(item.network)}</button>`
@@ -478,7 +526,7 @@ function rowHtml(item) {
   return `<tr class="is-clickable ${checked ? 'is-selected' : ''}" data-detail="${esc(item.uid)}">
     <td class="col-tick"><input type="checkbox" class="box" data-uid="${esc(item.uid)}" ${checked}></td>
     <td class="col-art">${artCell(item)}</td>
-    <td class="title-cell">${esc(item.title)}${flag}${over}</td>
+    <td class="title-cell">${esc(item.title)}${delta}${flag}${over}</td>
     <td class="num col-year">${item.year ?? ''}</td>
     <td class="num col-sn">${item.type === 'movie' ? '<span class="muted">film</span>' : (item.season_count || '')}</td>
     <td class="num col-eps">${item.type === 'movie' ? '' : (item.episode_count || '')}</td>
@@ -507,8 +555,8 @@ $('q').addEventListener('input', () => {
   searchTimer = setTimeout(() => { state.offset = 0; loadLibrary(); }, 220);
 });
 $('show-posters').addEventListener('change', loadLibrary);
-['status-filter', 'section-filter', 'review-filter', 'confidence-filter', 'source-filter',
- 'type-filter'].forEach((id) => {
+['status-filter', 'section-filter', 'review-filter', 'since-filter', 'confidence-filter',
+ 'source-filter', 'type-filter'].forEach((id) => {
   $(id).addEventListener('change', () => { state.offset = 0; loadLibrary(); });
 });
 $('clear-filters').addEventListener('click', () => {
@@ -516,6 +564,7 @@ $('clear-filters').addEventListener('click', () => {
   ['status-filter', 'section-filter', 'confidence-filter', 'source-filter', 'type-filter']
     .forEach((id) => { $(id).value = ''; });
   $('review-filter').checked = false;
+  $('since-filter').checked = false;
   state.networkFilter = '';
   state.offset = 0;
   loadLibrary();
@@ -601,6 +650,11 @@ let assignMode = 'replace';
 let assignSelection = new Set();
 
 document.addEventListener('click', (event) => {
+  const suggest = event.target.closest('[data-suggest]');
+  if (suggest) {
+    acceptSuggestion(suggest.dataset.suggest, Number(suggest.dataset.suggestCh));
+    return;
+  }
   const detailTrigger = event.target.closest('[data-detail]');
   if (detailTrigger && !event.target.closest('input, .chip')) {
     openDetail(detailTrigger.dataset.detail);
@@ -616,6 +670,19 @@ document.addEventListener('click', (event) => {
     loadLibrary();
   }
 });
+
+/** Apply a recorded suggestion (e.g. the genre rule's) as a deliberate,
+ *  human-approved override - the one thing the rule is not allowed to do
+ *  by itself. */
+async function acceptSuggestion(uid, channel) {
+  try {
+    const item = await api('/api/override', {
+      method: 'POST', body: JSON.stringify({ uid, channels: [channel] }),
+    });
+    banner(`${item.title} placed on ${item.channels[0].number} ${item.channels[0].name}.`, 'ok', 3000);
+    loadReview(); loadLibrary(); refreshStatus();
+  } catch (err) { banner(err.message, 'err'); }
+}
 
 async function ensureChannels() {
   if (!state.channels.length) {
@@ -714,7 +781,7 @@ function groupReview(items) {
     } else if (/genre fallback/i.test(reason)) {
       key = 'genre';
       kind = 'genre';
-      label = 'Placed by genre alone';
+      label = 'Genre suggestion only';
     } else if (/no TMDB record/i.test(reason)) {
       key = 'notmdb';
       kind = 'notmdb';
@@ -732,7 +799,9 @@ function groupReview(items) {
 
 const GROUP_BLURB = {
   network: 'These share one network. Map it once and every title moves together.',
-  genre: 'Nothing but the genre placed these, which is the least reliable rule. Worth a look.',
+  genre: 'Only a genre matched these, and genre alone guesses wrong too often to place '
+    + 'anything - so they stay unassigned. Each keeps its suggestion: apply it, pick a '
+    + 'channel yourself, or leave it be.',
   notmdb: 'Plex never matched these to TMDB, so nothing can route them. Fix the match in Plex, then re-scan.',
   other: '',
 };
@@ -759,7 +828,8 @@ function renderReviewGroups(items) {
         <button class="btn btn-small btn-primary" data-map-go="${esc(g.network)}">Map network</button>
         <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
       </div>` : `<div class="rev-fix">
-        <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
+        <button class="btn btn-small" data-accept-group="${esc(g.key)}">${
+          g.kind === 'genre' ? `Leave all ${g.items.length} unassigned` : `Accept all ${g.items.length}`}</button>
         <button class="btn btn-small" data-assign-group="${esc(g.key)}">Assign all to…</button>
       </div>`}
       <div class="rev-body ${g.items.length === biggest ? '' : 'is-hidden'}" data-body="${esc(g.key)}">
@@ -774,9 +844,13 @@ function renderReviewGroups(items) {
                 (i.channels[0] && `${i.channels[0].number} ${i.channels[0].name}`) || 'unplaced'}</div>
             </div>
             <div class="rev-actions">
+              ${i.suggestion ? `<button class="btn btn-small btn-primary" data-suggest="${esc(i.uid)}"
+                data-suggest-ch="${i.suggestion.channel_number}"
+                title="${esc(i.suggestion.reason)}">Place on ${esc(i.suggestion.channel_name)}</button>` : ''}
               <button class="btn btn-small" data-detail="${esc(i.uid)}">Details</button>
               <button class="btn btn-small" data-assign="${esc(i.uid)}">Assign</button>
-              <button class="btn btn-small btn-ghost" data-dismiss="${esc(i.uid)}">Accept</button>
+              <button class="btn btn-small btn-ghost" data-dismiss="${esc(i.uid)}">${
+                i.status === 'unassigned' ? 'Leave as is' : 'Accept'}</button>
             </div>
           </div>`).join('')}
       </div>
@@ -792,6 +866,13 @@ $('review-groups').addEventListener('click', async (event) => {
   if (toggle) {
     const body = document.querySelector(`[data-body="${CSS.escape(toggle.dataset.toggle)}"]`);
     body.classList.toggle('is-hidden');
+    return;
+  }
+
+  const dismiss = event.target.closest('[data-dismiss]');
+  if (dismiss) {
+    await api(`/api/dismiss/${encodeURIComponent(dismiss.dataset.dismiss)}`, { method: 'POST' });
+    loadReview(); refreshStatus();
     return;
   }
 
@@ -876,8 +957,12 @@ async function loadReview() {
       ${item.overview ? `<div class="review-overview">${esc(item.overview)}</div>` : ''}
       <div>${channelChips(item)}</div>
       <div class="card-actions">
+        ${item.suggestion ? `<button class="btn btn-small btn-primary" data-suggest="${esc(item.uid)}"
+           data-suggest-ch="${item.suggestion.channel_number}" title="${esc(item.suggestion.reason)}">
+           Place on ${item.suggestion.channel_number} ${esc(item.suggestion.channel_name)}</button>` : ''}
         <button class="btn btn-small" data-assign="${esc(item.uid)}">Assign</button>
-        <button class="btn btn-small" data-dismiss="${esc(item.uid)}">Looks right</button>
+        <button class="btn btn-small" data-dismiss="${esc(item.uid)}">${
+          item.status === 'unassigned' ? 'Leave as is' : 'Looks right'}</button>
         ${item.network ? `<button class="btn btn-small" data-network="${esc(item.network)}">All from ${esc(item.network)}</button>` : ''}
         ${item.tmdb_id ? `<a class="btn btn-small" target="_blank" rel="noopener"
            href="https://www.themoviedb.org/tv/${item.tmdb_id}">TMDB ↗</a>` : ''}
@@ -925,6 +1010,7 @@ async function loadNetworks() {
     ].map(([l, v, c]) => `<div class="stat ${c}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
   }
   renderNetworks();
+  loadAccuracy(); // deliberately not awaited - a few hundred cascade runs on first call
 }
 
 function renderNetworks() {
@@ -1005,6 +1091,118 @@ function renderNetworks() {
   $(id).addEventListener('input', renderNetworks);
   $(id).addEventListener('change', renderNetworks);
 });
+
+/* ── routing accuracy ─────────────────────────────────────── */
+const MODE_LABEL = {
+  streaming_first: 'Streaming-first',
+  hybrid: 'Hybrid',
+  themed: 'Themed',
+};
+
+async function loadAccuracy() {
+  const el = $('accuracy-body');
+  let data;
+  try { data = await api('/api/accuracy'); } catch (err) {
+    el.innerHTML = `<p class="hint">Could not measure accuracy: ${esc(err.message)}</p>`;
+    return;
+  }
+  if (!data.scanned) {
+    el.innerHTML = '<p class="hint">Run a scan first — the measurement compares the routing '
+      + 'against the lineup titles a scan finds in your library.</p>';
+    return;
+  }
+  renderAccuracy(data);
+}
+
+function renderAccuracy(data) {
+  const el = $('accuracy-body');
+
+  if (!data.sampled && !(data.suggestions && data.suggestions.n)) {
+    el.innerHTML = `<p class="hint">Nothing to measure yet: of ${data.ground_truth} lineup-placed
+      show(s), none could be probed — ${data.skipped.no_cached_record} missing from the TMDB
+      cache, ${data.skipped.no_tmdb_id} without a TMDB id. A fresh scan fills the cache.</p>`;
+    return;
+  }
+
+  const overallCls = !data.sufficient ? ''
+    : data.pct >= 85 ? 'good' : data.pct >= 60 ? 'warn' : 'bad';
+  const modes = data.modes.map((m) => `
+    <div class="stat ${m.mode === data.mode ? 'is-on' : ''}">
+      <b>${m.sufficient ? `${m.pct}%` : `${m.agree}/${m.sampled}`}</b>
+      <span>${esc(MODE_LABEL[m.mode] || m.mode)}${m.mode === data.mode ? ' · current' : ''} — n=${m.sampled}</span>
+    </div>`).join('');
+
+  const rules = data.by_rule.map((r) => `
+    <tr>
+      <td>${esc(r.rule.replace(/_/g, ' '))}</td>
+      <td class="num">${r.agree}/${r.n}</td>
+      <td class="num">${r.sufficient ? `${r.pct}%` : '<span class="muted">too few to judge</span>'}</td>
+      <td class="col-meter">${r.sufficient
+        ? `<div class="meter"><span style="width:${r.pct}%"></span></div>` : ''}</td>
+    </tr>`).join('');
+
+  const s = data.suggestions || {};
+  const suggestions = s.n ? `<p class="hint">The genre rule no longer places anything — it only
+    suggests. Its suggestions would have matched the lineup ${s.agree}/${s.n} time(s)${
+      s.sufficient ? ` (${s.pct}%)` : ' — too few to judge'}. Films route mostly on genre,
+    which is why they stay off until this number earns trust.</p>` : '';
+
+  const shown = data.disagreements.slice(0, 10);
+  const disagreements = shown.length ? `
+    <h4>Where they disagree</h4>
+    <p class="hint">Each is either a routing bug or a debatable lineup call. Click one to inspect.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Title</th><th>Network</th><th>Nostalgia Line would pick</th>
+          <th>Your lineup says</th><th>Rule</th></tr></thead>
+        <tbody>
+          ${shown.map((d) => `
+          <tr class="is-clickable" data-detail="${esc(d.uid)}">
+            <td class="title-cell">${esc(d.title)} <span class="muted">${d.year ?? ''}</span></td>
+            <td>${esc(d.network || '—')}</td>
+            <td>${d.ours.map((c) => `<span class="chip">${c.number} ${esc(c.name)}</span>`).join(' ')}</td>
+            <td>${d.theirs.map((c) => `<span class="chip">${c.number} ${esc(c.name)}</span>`).join(' ')}</td>
+            <td class="why">${esc(d.rule.replace(/_/g, ' '))}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${data.disagreements_total > shown.length
+      ? `<p class="hint">…and ${data.disagreements_total - shown.length} more. The needs-review
+         and unassigned filters on the Library tab are the working views for these.</p>` : ''}`
+    : '<p class="hint">No disagreements in the sampled titles.</p>';
+
+  el.innerHTML = `
+    <div class="stats">
+      <div class="stat ${overallCls}">
+        <b>${data.sufficient ? `${data.pct}%` : '—'}</b>
+        <span>Agreement — ${data.agree} of ${data.sampled} sampled</span>
+      </div>
+      <div class="stat"><b>${data.ground_truth}</b><span>Lineup titles as ground truth</span></div>
+      <div class="stat ${data.disagreements_total ? 'warn' : ''}">
+        <b>${data.disagreements_total}</b><span>Disagreements</span>
+      </div>
+    </div>
+    ${data.sufficient ? ''
+      : `<p class="hint">Only ${data.sampled} usable sample(s) — at least ${data.min_samples}
+         are needed before a percentage means anything.</p>`}
+    <h4>By routing mode</h4>
+    <p class="hint">The same measurement under each mode — your library's numbers, for choosing
+      the mode on the Settings tab.</p>
+    <div class="stats">${modes}</div>
+    <h4>By rule</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rule</th><th class="num">Agreed</th><th class="num">Rate</th><th></th></tr></thead>
+        <tbody>${rules}</tbody>
+      </table>
+    </div>
+    ${suggestions}
+    ${disagreements}
+    ${data.skipped.no_opinion ? `<p class="hint">For ${data.skipped.no_opinion} lineup title(s)
+      the routing had no answer at all — they are on a channel only because your lineup already
+      put them there.</p>` : ''}`;
+}
 
 /* ── title detail ─────────────────────────────────────────── */
 const SOURCE_LABEL = {

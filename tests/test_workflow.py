@@ -103,6 +103,31 @@ def test_the_dict_shape_the_ui_reads():
     assert all(set(s) >= {"key", "title", "blurb", "state", "action"} for s in d["steps"])
 
 
+def test_new_titles_reopen_the_story_with_an_explanation():
+    """After a scheduled scan brings arrivals, the re-opened step must say why
+    it re-opened - a step that was done yesterday looks broken otherwise."""
+    w = at(held_for_review=2, pending_additions=3, new_since_scan=3)
+    assert w.current.key == "review"
+    assert "3 title(s)" in w.current.detail
+
+    w = at(pending_additions=3, new_since_scan=3)
+    assert w.current.key == "export"
+    assert "3 title(s)" in w.current.detail
+
+
+def test_absorbed_new_titles_are_reported_on_the_scan_step():
+    """Arrivals that needed nothing still deserve a mention, not silence."""
+    w = at(new_since_scan=2, last_export_at=1.0, baseline_at=2.0)
+    assert w.complete is True
+    assert "2 title(s) are new or moved" in w.steps[1].detail
+
+
+def test_no_delta_means_no_new_title_chatter():
+    w = at(held_for_review=2, pending_additions=2)
+    assert "new or moved" not in w.steps[1].detail
+    assert "added or moved" not in w.current.detail
+
+
 def test_the_apply_step_never_claims_it_checked_nostalgiatv():
     """It infers success from what comes back, and must say so - an app that
     reports knowledge it does not have is the same class of bug as a stale

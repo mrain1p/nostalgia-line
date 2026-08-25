@@ -106,6 +106,11 @@
     </div>
 
     <div class="toolbar toolbar-more is-hidden" id="filters-more">
+      <label class="switch" title="Titles the most recent scan added, or whose channel moved">
+        <input type="checkbox" id="since-filter">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">New since last scan</span>
+      </label>
       <select id="confidence-filter" aria-label="Confidence">
         <option value="">Any confidence</option>
         <option value="high">High</option>
@@ -238,6 +243,19 @@
       </table>
       <div id="network-empty" class="empty-state"></div>
     </div>
+
+    <section class="accuracy" id="accuracy-panel">
+      <header class="page-head">
+        <div class="page-head-text">
+          <h3>Routing accuracy</h3>
+          <p>Every show your lineup already places is a known right answer. Nostalgia Line
+             re-routes each one independently and compares — so these are your library's
+             numbers, not a benchmark from someone else's. A disagreement is either a
+             routing bug or a debatable call in the lineup; both are worth a look.</p>
+        </div>
+      </header>
+      <div id="accuracy-body"><p class="hint">Measuring…</p></div>
+    </section>
   </section>
 
   <!-- ── Channels ────────────────────────────────────────────── -->
@@ -477,6 +495,41 @@
           </select>
         </label>
         </div>
+      </section>
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>Scheduled scans</h3>
+            <p>Re-scan on a timer so new shows surface without anyone remembering to
+               look. What changed shows up under “New since last scan”.</p>
+          </div>
+        </header>
+        <div class="settings-fields">
+        <label class="switch" style="margin-bottom:12px">
+          <input type="checkbox" id="sched-enabled">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-text">Scan on a schedule</span>
+        </label>
+        <label class="field">Every
+          <select id="sched-interval">
+            <option value="6">6 hours</option>
+            <option value="12">12 hours</option>
+            <option value="24">24 hours</option>
+            <option value="72">3 days</option>
+            <option value="168">7 days</option>
+          </select>
+        </label>
+        <label class="field">Quiet hours <small>(optional — a due scan waits until the window
+            ends; hours are the server's local time)</small>
+          <div class="field-pair">
+            <select id="sched-quiet-start"><option value="">off</option></select>
+            <span class="hint">to</span>
+            <select id="sched-quiet-end"><option value="">off</option></select>
+          </div>
+        </label>
+        </div>
+        <div id="sched-note" class="hint"></div>
       </section>
 
       <section class="card settings-card">
