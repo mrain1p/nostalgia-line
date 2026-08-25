@@ -702,3 +702,56 @@ def test_an_uploaded_playlist_file_is_parsed(client):
     assert body["imported_count"] == 0, "the logo host is unreachable in a test"
     assert body["skipped_count"] == 1, "but the channel was matched and attempted"
     assert body["unmatched_count"] == 0
+
+
+# -- mapping source and channel contents ---------------------------------
+
+
+def test_mapping_source_distinguishes_who_placed_a_title(client):
+    items = {i["title"]: i for i in client.get("/api/library").json()["items"]}
+    assert items["Zeta Show"]["mapping_source"] == "lineup", "came from channels.csv"
+    assert items["Alpha Show"]["mapping_source"] == "auto", "placed by the cascade"
+    assert items["Epsilon Show"]["mapping_source"] == "none", "nothing placed it"
+
+    client.post("/api/override", json={"uid": "tmdb:show:2", "channels": [1044]})
+    assert client.get("/api/item/tmdb:show:2").json()["mapping_source"] == "manual"
+
+
+def test_library_can_be_filtered_by_mapping_source(client):
+    assert client.get("/api/library", params={"source": "lineup"}).json()["total"] == 1
+    assert client.get("/api/library", params={"source": "none"}).json()["total"] == 1
+    both = client.get("/api/library", params={"source": "lineup,none"}).json()
+    assert both["total"] == 2
+
+
+def test_channel_contents_list_library_titles(client):
+    body = client.get("/api/channels/1068/titles").json()
+    assert body["channel"]["name"] == "H.B.Yo Min"
+    titles = {t["title"] for t in body["titles"]}
+    assert "Alpha Show" in titles
+    row = next(t for t in body["titles"] if t["title"] == "Alpha Show")
+    assert row["uid"] == "tmdb:show:1"
+    assert row["mapping_source"] == "auto"
+    assert row["reason"]
+
+
+def test_channel_contents_separate_titles_you_do_not_own(client):
+    """The lineup file places titles that are not in the library. They explain a
+    channel's count but there is nothing to edit, so they are listed apart."""
+    body = client.get("/api/channels/1068/titles").json()
+    assert body["counts"]["not_in_library"] > 0
+    assert body["counts"]["in_library"] == len(body["titles"])
+    assert all("uid" not in row for row in body["not_in_library"])
+
+
+def test_channel_contents_show_a_titles_other_channels(client):
+    client.post("/api/override", json={"uid": "tmdb:show:1", "channels": [1068, 1044]})
+    row = next(
+        t for t in client.get("/api/channels/1068/titles").json()["titles"]
+        if t["uid"] == "tmdb:show:1"
+    )
+    assert [c["number"] for c in row["other_channels"]] == [1044]
+
+
+def test_channel_contents_404_for_an_unknown_channel(client):
+    assert client.get("/api/channels/4242/titles").status_code == 404

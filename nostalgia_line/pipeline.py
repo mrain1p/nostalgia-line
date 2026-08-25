@@ -49,6 +49,23 @@ class LibraryEntry:
         return self.resolution.status
 
     @property
+    def mapping_source(self) -> str:
+        """Who decided this placement.
+
+        lineup  - already in the channels.csv you imported
+        auto    - the cascade placed it
+        manual  - you placed it by hand
+        none    - nothing placed it
+        """
+        if self.overridden:
+            return "manual"
+        if self.resolution.status == STATUS_APP:
+            return "lineup"
+        if self.resolution.status == STATUS_LINE:
+            return "auto"
+        return "none"
+
+    @property
     def channels(self) -> list[int]:
         if self.resolution.status == STATUS_APP:
             return list(self.resolution.existing_channels)
@@ -96,6 +113,7 @@ class LibraryEntry:
             "poster_path": self.poster_path,
             "overridden": self.overridden,
             "status": self.status,
+            "mapping_source": self.mapping_source,
             "channels": [
                 {"number": n, "name": catalog.name_of(n)} for n in self.channels
             ],
@@ -238,6 +256,36 @@ class ScanResult:
 
     def review_queue(self) -> list[LibraryEntry]:
         return [e for e in self.entries if e.resolution.needs_review and not e.overridden]
+
+    def channel_titles(self, number: int, catalog: ChannelCatalog) -> list[dict]:
+        """Every library title currently placed on a channel."""
+        rows = []
+        for entry in self.entries:
+            if number in entry.channels:
+                primary = entry.resolution.primary
+                rows.append(
+                    {
+                        "uid": entry.uid,
+                        "title": entry.title,
+                        "year": entry.year,
+                        "episode_count": entry.episode_count,
+                        "season_count": entry.season_count,
+                        "network": entry.network,
+                        "poster_path": entry.poster_path,
+                        "tmdb_id": entry.tmdb_id,
+                        "mapping_source": entry.mapping_source,
+                        "needs_review": entry.resolution.needs_review,
+                        "confidence": entry.resolution.confidence,
+                        "reason": primary.reason if primary else "",
+                        "other_channels": [
+                            {"number": n, "name": catalog.name_of(n)}
+                            for n in entry.channels
+                            if n != number
+                        ],
+                    }
+                )
+        rows.sort(key=lambda r: r["title"].casefold())
+        return rows
 
     def network_rollup(self, network_map, orphan_map, catalog: ChannelCatalog) -> list[dict]:
         """Every TMDB network in the library, with where it currently routes.

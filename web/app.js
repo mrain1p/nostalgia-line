@@ -189,20 +189,53 @@ function renderProvenance(status) {
   el.innerHTML = parts.join(sep);
 }
 
+/* Each tile is also the filter for what it counts - the number you are looking
+   at is usually the set you want to work on next. */
+const STAT_TILES = [
+  { label: 'Titles', key: 'total', cls: '', filter: {} },
+  { label: 'Already assigned', key: 'already_assigned', cls: '', filter: { status: 'already_assigned' } },
+  { label: 'Placed by Line', key: 'assigned_by_line', cls: 'good', filter: { status: 'assigned' } },
+  { label: 'Unassigned', key: 'unassigned', cls: 'bad', filter: { status: 'unassigned' } },
+  { label: 'Needs review', key: 'needs_review', cls: 'warn', filter: { review: true } },
+  { label: 'Coverage', key: 'coverage_pct', cls: '', suffix: '%' },
+];
+
+function activeTileIndex() {
+  const status = $('status-filter').value;
+  const review = $('review-filter').checked;
+  if (review) return 4;
+  return STAT_TILES.findIndex((t, i) => i > 0 && t.filter && t.filter.status === status && status);
+}
+
 function renderStats(stats) {
   if (!stats) { $('stats').innerHTML = ''; return; }
-  const cards = [
-    ['Titles', stats.total, ''],
-    ['Already assigned', stats.already_assigned, ''],
-    ['Placed by Line', stats.assigned_by_line, 'good'],
-    ['Unassigned', stats.unassigned, stats.unassigned ? 'bad' : ''],
-    ['Needs review', stats.needs_review, stats.needs_review ? 'warn' : ''],
-    ['Coverage', `${stats.coverage_pct}%`, ''],
-  ];
-  $('stats').innerHTML = cards
-    .map(([label, value, cls]) => `<div class="stat ${cls}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`)
-    .join('');
+  const active = activeTileIndex();
+  $('stats').innerHTML = STAT_TILES.map((tile, i) => {
+    const value = `${stats[tile.key]}${tile.suffix || ''}`;
+    const zero = !tile.filter || stats[tile.key] === 0;
+    const cls = [
+      'stat', tile.cls,
+      tile.filter && !zero ? 'is-clickable' : '',
+      i === active ? 'is-on' : '',
+    ].filter(Boolean).join(' ');
+    return `<div class="${cls}" ${tile.filter && !zero ? `data-tile="${i}"` : ''}
+      ${tile.filter && !zero ? 'title="Filter the library to these"' : ''}>
+      <b>${esc(value)}</b><span>${esc(tile.label)}</span></div>`;
+  }).join('');
 }
+
+$('stats').addEventListener('click', (event) => {
+  const tile = event.target.closest('[data-tile]');
+  if (!tile) return;
+  const spec = STAT_TILES[Number(tile.dataset.tile)];
+  const alreadyOn = tile.classList.contains('is-on');
+  $('status-filter').value = alreadyOn ? '' : (spec.filter.status || '');
+  $('review-filter').checked = alreadyOn ? false : Boolean(spec.filter.review);
+  state.offset = 0;
+  showTab('library');
+  loadLibrary();
+  refreshStatus();
+});
 
 function renderDiagnostics(diag) {
   const el = $('diagnostics');
@@ -251,6 +284,7 @@ function libraryParams(extra = {}) {
   if ($('q').value.trim()) params.set('q', $('q').value.trim());
   if ($('status-filter').value) params.set('status_filter', $('status-filter').value);
   if ($('confidence-filter').value) params.set('confidence', $('confidence-filter').value);
+  if ($('source-filter').value) params.set('source', $('source-filter').value);
   if ($('section-filter').value) params.set('section', $('section-filter').value);
   if ($('review-filter').checked) params.set('review_only', 'true');
   if (state.networkFilter) params.set('network', state.networkFilter);
@@ -342,7 +376,7 @@ function rowHtml(item) {
   const net = item.network
     ? `<button class="btn-link" data-network="${esc(item.network)}">${esc(item.network)}</button>`
     : '';
-  return `<tr class="${checked ? 'is-selected' : ''}">
+  return `<tr class="is-clickable ${checked ? 'is-selected' : ''}" data-detail="${esc(item.uid)}">
     <td class="col-tick"><input type="checkbox" class="box" data-uid="${esc(item.uid)}" ${checked}></td>
     <td class="col-art">${artCell(item)}</td>
     <td class="title-cell">${esc(item.title)}${flag}${over}</td>
@@ -352,7 +386,8 @@ function rowHtml(item) {
     <td>${net}</td>
     <td>${channelChips(item)}</td>
     <td class="col-conf"><span class="conf conf-${esc(item.confidence)}">${esc(item.confidence)}</span></td>
-    <td><span class="status status-${esc(item.status)}">${esc(item.status.replace(/_/g, ' '))}</span></td>
+    <td><span class="src src-${esc(item.mapping_source)}"
+      title="${esc(SOURCE_LABEL[item.mapping_source] || '')}">${esc(item.status.replace(/_/g, ' '))}</span></td>
     <td class="why col-why">${esc(why)}</td>
   </tr>`;
 }
@@ -373,12 +408,12 @@ $('q').addEventListener('input', () => {
   searchTimer = setTimeout(() => { state.offset = 0; loadLibrary(); }, 220);
 });
 $('show-posters').addEventListener('change', loadLibrary);
-['status-filter', 'section-filter', 'review-filter', 'confidence-filter'].forEach((id) => {
+['status-filter', 'section-filter', 'review-filter', 'confidence-filter', 'source-filter'].forEach((id) => {
   $(id).addEventListener('change', () => { state.offset = 0; loadLibrary(); });
 });
 $('clear-filters').addEventListener('click', () => {
   $('q').value = '';
-  ['status-filter', 'section-filter', 'confidence-filter'].forEach((id) => { $(id).value = ''; });
+  ['status-filter', 'section-filter', 'confidence-filter', 'source-filter'].forEach((id) => { $(id).value = ''; });
   $('review-filter').checked = false;
   state.networkFilter = '';
   state.offset = 0;
@@ -465,6 +500,11 @@ let assignMode = 'replace';
 let assignSelection = new Set();
 
 document.addEventListener('click', (event) => {
+  const detailTrigger = event.target.closest('[data-detail]');
+  if (detailTrigger && !event.target.closest('input, .chip')) {
+    openDetail(detailTrigger.dataset.detail);
+    return;
+  }
   const uid = event.target.dataset?.assign;
   if (uid) openAssign(uid, 'replace');
   const network = event.target.dataset?.network;
@@ -688,6 +728,146 @@ function renderNetworks() {
   $(id).addEventListener('change', renderNetworks);
 });
 
+/* ── title detail ─────────────────────────────────────────── */
+const SOURCE_LABEL = {
+  lineup: 'From your channels.csv',
+  auto: 'Placed by Nostalgia Line',
+  manual: 'Assigned by you',
+  none: 'Not placed',
+};
+
+async function openDetail(uid) {
+  const item = await api(`/api/item/${encodeURIComponent(uid)}`).catch(() => null);
+  if (!item) return;
+
+  const chips = (item.channels || [])
+    .map((c) => `<button class="chip" data-assign="${esc(item.uid)}">${c.number} ${esc(c.name)}</button>`)
+    .join('') || '<span class="muted">none</span>';
+
+  const why = (item.assignments || []).length
+    ? item.assignments.map((a) => `<div class="detail-why">
+        <b>${a.channel_number} ${esc(a.channel_name)}</b> — ${esc(a.reason)}
+        <br><span class="muted">${esc(a.rule)} · ${esc(a.confidence)} confidence${a.primary ? '' : ' · secondary'}</span>
+      </div>`).join('')
+    : `<div class="detail-why">${esc(item.review_reason || 'Nothing placed this title.')}</div>`;
+
+  const rows = [
+    ['TMDB network', item.network || '—'],
+    ['Mapping', SOURCE_LABEL[item.mapping_source] || item.mapping_source],
+    ['Confidence', item.confidence],
+    ['Library', item.section],
+    ['Seasons / episodes', `${item.season_count || '—'} / ${item.episode_count || '—'}`],
+    ['Genres', (item.genres || []).join(', ') || '—'],
+    ['TMDB id', item.tmdb_id || 'missing'],
+  ].map(([k, v]) => `<div class="detail-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+
+  const lineupNote = item.mapping_source === 'lineup'
+    ? `<p class="hint" style="margin-top:10px">This came from the channels.csv you imported.
+       Export never removes an existing row, so changing it here adds a second placement
+       rather than moving it.</p>`
+    : '';
+
+  $('detail-panel').innerHTML = `
+    <div class="detail-head">
+      ${item.poster_path
+        ? `<img class="detail-art" src="${esc(posterUrl(item.poster_path, 'w185'))}" alt="">`
+        : '<div class="detail-art"></div>'}
+      <div>
+        <h3>${esc(item.title)}</h3>
+        <div class="detail-meta">${item.year ?? '—'}${item.network ? ` · ${esc(item.network)}` : ''}</div>
+        <div class="detail-meta"><span class="src src-${esc(item.mapping_source)}">${esc(item.mapping_source)}</span></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h4>Channels</h4>
+      <div class="chips">${chips}</div>
+      <div class="detail-actions">
+        <button class="btn btn-small btn-primary" data-assign="${esc(item.uid)}">Change channel</button>
+        ${item.tmdb_id ? `<a class="btn btn-small" target="_blank" rel="noopener"
+          href="https://www.themoviedb.org/tv/${item.tmdb_id}">TMDB ↗</a>` : ''}
+        ${item.network ? `<button class="btn btn-small" data-network="${esc(item.network)}">All from ${esc(item.network)}</button>` : ''}
+      </div>
+      ${lineupNote}
+    </div>
+
+    <div class="detail-section"><h4>Why it landed there</h4>${why}</div>
+    ${item.overview ? `<div class="detail-section"><h4>Overview</h4>
+      <p class="detail-overview">${esc(item.overview)}</p></div>` : ''}
+    <div class="detail-section"><h4>Details</h4><div class="detail-rows">${rows}</div></div>
+    <div class="detail-actions">
+      <button class="btn btn-small btn-ghost" data-close-detail>Close</button>
+    </div>`;
+  $('detail').classList.remove('is-hidden');
+}
+
+document.addEventListener('click', (event) => {
+  if (event.target.closest('[data-close-detail]')) $('detail').classList.add('is-hidden');
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') $('detail').classList.add('is-hidden');
+});
+
+/* ── channel contents ─────────────────────────────────────── */
+let channelRows = [];
+let channelData = null;
+
+async function openChannel(number) {
+  const data = await api(`/api/channels/${number}/titles`).catch(() => null);
+  if (!data) return;
+  channelData = data;
+  channelRows = data.titles;
+  $('channel-art').src = `${logoUrl(number)}?v=${state.logoVersion}`;
+  $('channel-title').textContent = `${data.channel.number} · ${data.channel.name}`;
+  $('channel-sub').textContent =
+    `${data.counts.in_library} from your library`
+    + (data.counts.needs_review ? ` · ${data.counts.needs_review} need review` : '')
+    + (data.counts.not_in_library ? ` · ${data.counts.not_in_library} in the lineup file but not in your library` : '');
+  $('channel-q').value = '';
+  renderChannelRows();
+  $('channel-dialog').showModal();
+}
+
+function renderChannelRows() {
+  const needle = $('channel-q').value.trim().toLowerCase();
+  const rows = channelRows.filter((r) => !needle || r.title.toLowerCase().includes(needle));
+  const body = rows.map((r) => `
+    <div class="channel-row">
+      ${r.poster_path
+        ? `<img class="art" loading="lazy" src="${esc(posterUrl(r.poster_path, 'w92'))}" alt="">`
+        : '<div class="art"></div>'}
+      <div class="channel-row-main">
+        <div class="t">${esc(r.title)} ${r.needs_review ? '<span class="flag" title="needs review">⚑</span>' : ''}</div>
+        <div class="s">${r.year ?? '—'} · ${r.episode_count || 0} eps${r.network ? ` · ${esc(r.network)}` : ''}${
+          r.other_channels.length ? ` · also on ${r.other_channels.map((c) => c.number).join(', ')}` : ''}</div>
+      </div>
+      <span class="src src-${esc(r.mapping_source)}">${esc(r.mapping_source)}</span>
+      <div class="channel-row-actions">
+        <button class="btn btn-small" data-detail="${esc(r.uid)}">Details</button>
+        <button class="btn btn-small" data-assign="${esc(r.uid)}">Move</button>
+      </div>
+    </div>`).join('');
+
+  const absent = channelData && channelData.not_in_library.length
+    ? `<div class="channel-absent"><strong>${channelData.not_in_library.length}</strong> title(s) sit
+       on this channel in your channels.csv but are not in your media library, so there is nothing
+       to edit here: ${channelData.not_in_library.slice(0, 12).map((t) => esc(t.title)).join(', ')}${
+         channelData.not_in_library.length > 12 ? '…' : ''}</div>`
+    : '';
+
+  $('channel-body').innerHTML =
+    (body || '<p class="empty">Nothing from your library on this channel yet.</p>') + absent;
+}
+
+$('channel-q').addEventListener('input', renderChannelRows);
+$('channel-close').addEventListener('click', () => $('channel-dialog').close());
+
+$('channel-table').addEventListener('click', (event) => {
+  if (event.target.closest('button, a')) return;
+  const row = event.target.closest('[data-channel]');
+  if (row) openChannel(Number(row.dataset.channel));
+});
+
 /* ── channel artwork ──────────────────────────────────────── */
 async function loadLogos() {
   const data = await api('/api/logos').catch(() => null);
@@ -859,7 +1039,7 @@ function renderChannels(channels) {
       const hot = c.total > max * 0.6 ? 'hot' : '';
       const tag = c.empty ? '<span class="tag tag-empty">empty</span>'
         : c.thin ? '<span class="tag tag-thin">thin</span>' : '';
-      return `<tr>
+      return `<tr class="is-clickable" data-channel="${c.number}">
         <td class="num">${c.number}</td>
         <td class="col-art"><img class="art-logo art-logo-${esc(c.logo_source || 'badge')}"
           loading="lazy" decoding="async" alt=""

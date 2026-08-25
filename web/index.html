@@ -81,6 +81,13 @@
         <option value="low">Low</option>
         <option value="none">Unplaced</option>
       </select>
+      <select id="source-filter" aria-label="Placed by">
+        <option value="">Any mapping</option>
+        <option value="lineup">From your channels.csv</option>
+        <option value="auto">Placed by Nostalgia Line</option>
+        <option value="manual">Assigned by you</option>
+        <option value="none">Not placed</option>
+      </select>
       <select id="section-filter" aria-label="Library"><option value="">All libraries</option></select>
 
       <label class="switch">
@@ -427,6 +434,29 @@
     </div>
   </section>
 </main>
+
+<!-- title detail -->
+<div id="detail" class="drawer is-hidden" role="dialog" aria-label="Title detail">
+  <div class="drawer-scrim" data-close-detail></div>
+  <aside class="drawer-panel" id="detail-panel"></aside>
+</div>
+
+<!-- channel contents -->
+<dialog id="channel-dialog">
+  <header class="dialog-head">
+    <img id="channel-art" alt="" class="channel-art">
+    <div>
+      <h3 id="channel-title">Channel</h3>
+      <p id="channel-sub"></p>
+    </div>
+  </header>
+  <div class="toolbar">
+    <input type="search" id="channel-q" placeholder="Filter titles">
+    <span class="spacer"></span>
+    <button class="btn btn-small btn-ghost" id="channel-close">Close</button>
+  </div>
+  <div id="channel-body" class="channel-list"></div>
+</dialog>
 
 <!-- assignment dialog -->
 <dialog id="assign-dialog">

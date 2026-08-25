@@ -16,7 +16,13 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED
-from .channels import ChannelCatalog, DefaultAssignments, load_network_map, load_orphan_networks
+from .channels import (
+    ChannelCatalog,
+    DefaultAssignments,
+    load_network_map,
+    load_orphan_networks,
+    normalize_title,
+)
 from .config import SOURCES, Config, load_config, save_config
 from .export import build_addition_rows
 from .export import export as run_export
@@ -373,6 +379,7 @@ def library(
     network: str = "",
     rule: str = "",
     confidence: str = "",
+    source: str = "",
     review_only: bool = False,
     sort: str = "title",
     direction: str = "asc",
@@ -402,6 +409,9 @@ def library(
     if confidence:
         wanted = set(confidence.split(","))
         entries = [e for e in entries if e.resolution.confidence in wanted]
+    if source:
+        wanted = set(source.split(","))
+        entries = [e for e in entries if e.mapping_source in wanted]
     if q:
         needle = q.casefold()
         entries = [
@@ -732,6 +742,37 @@ def _logo_placeholder(channel) -> str:
         f' fill="{fg}" fill-opacity="0.75" text-anchor="middle">{channel.number}</text>'
         f"</svg>"
     )
+
+
+@app.get("/api/channels/{number}/titles")
+def channel_titles(number: int) -> dict:
+    """Everything sitting on one channel, from your library and from the lineup file."""
+    channel = state.catalog.get(number)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"no channel {number}")
+
+    in_library = state.result.channel_titles(number, state.catalog) if state.result else []
+    known = {(normalize_title(r["title"]), r["year"]) for r in in_library}
+
+    # Rows the lineup file puts here for titles you do not actually have. Worth
+    # showing: they explain a channel's count, but there is nothing to edit.
+    absent = [
+        {"title": row.title, "year": row.release_year}
+        for row in state.defaults.titles_on_channel(number)
+        if (normalize_title(row.title), row.release_year) not in known
+    ]
+    absent.sort(key=lambda r: r["title"].casefold())
+
+    return {
+        "channel": {"number": channel.number, "name": channel.name, "category": channel.category},
+        "titles": in_library,
+        "not_in_library": absent,
+        "counts": {
+            "in_library": len(in_library),
+            "not_in_library": len(absent),
+            "needs_review": sum(1 for r in in_library if r["needs_review"]),
+        },
+    }
 
 
 @app.get("/api/review")
