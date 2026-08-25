@@ -225,11 +225,6 @@
         </div>
         <span class="test-badge" id="logo-badge"></span>
       </header>
-      <label class="field">Import from your NostalgiaTV playlist
-        <input type="text" id="logo-m3u" placeholder="https://your-nostalgiatv/channels.m3u?profileId=…">
-        <small>The fastest route: NostalgiaTV's M3U lists a logo for every channel,
-          public and keyed by channel, so this pulls the real artwork in one go.</small>
-      </label>
       <div class="card-foot">
         <button class="btn btn-primary" type="button" id="logo-m3u-btn">Fetch from playlist</button>
         <button class="btn" type="button" id="logo-import-btn">Upload files</button>
@@ -344,6 +339,32 @@
           <button class="btn" type="button" id="test-tmdb">Test TMDB</button>
         </div>
         <div id="tmdb-result" class="test-result"></div>
+      </section>
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>NostalgiaTV</h3>
+            <p>Optional. Only the M3U playlist is used — a published interop format,
+               never NostalgiaTV's private API — to pull real channel artwork.</p>
+          </div>
+          <span class="test-badge" id="ntv-badge"></span>
+        </header>
+        <label class="field">Playlist URL
+          <input type="text" id="ntv-m3u" placeholder="https://your-nostalgiatv/channels.m3u?profileId=…">
+          <small>Copy it from NostalgiaTV's Live TV / IPTV settings.</small>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="ntv-auto" checked>
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-text">Refresh artwork after each scan</span>
+        </label>
+        <div class="card-foot">
+          <button class="btn" type="button" id="ntv-fetch">Fetch artwork now</button>
+          <button class="btn btn-ghost" type="button" id="ntv-upload">Upload .m3u file</button>
+          <input type="file" id="ntv-file" accept=".m3u,.m3u8" hidden>
+        </div>
+        <div id="ntv-result" class="test-result"></div>
       </section>
 
       <section class="card settings-card">

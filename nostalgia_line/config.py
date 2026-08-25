@@ -30,6 +30,17 @@ class JellyfinConfig:
 
 
 @dataclass
+class NostalgiaTVConfig:
+    """Optional pointers at a NostalgiaTV install.
+
+    Only interop formats are used - the M3U playlist - never its private API.
+    """
+
+    m3u_url: str = ""
+    auto_refresh_logos: bool = True
+
+
+@dataclass
 class TMDBConfig:
     api_key: str = ""
     rate_limit: int = 50
@@ -83,6 +94,7 @@ class Config:
     source: str = "plex"
     plex: PlexConfig = field(default_factory=PlexConfig)
     jellyfin: JellyfinConfig = field(default_factory=JellyfinConfig)
+    nostalgiatv: NostalgiaTVConfig = field(default_factory=NostalgiaTVConfig)
     tmdb: TMDBConfig = field(default_factory=TMDBConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -128,6 +140,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         source=str(raw.get("source") or "plex").strip().lower(),
         plex=PlexConfig(**_section(raw, "plex")),
         jellyfin=JellyfinConfig(**_section(raw, "jellyfin")),
+        nostalgiatv=NostalgiaTVConfig(**_section(raw, "nostalgiatv")),
         tmdb=TMDBConfig(**_section(raw, "tmdb")),
         routing=RoutingConfig(**_section(raw, "routing")),
         output=OutputConfig(**_section(raw, "output")),
@@ -146,6 +159,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         cfg.jellyfin.url = env
     if env := os.getenv("JELLYFIN_API_KEY"):
         cfg.jellyfin.api_key = env
+    if env := os.getenv("NOSTALGIATV_M3U_URL"):
+        cfg.nostalgiatv.m3u_url = env
     if env := os.getenv("NOSTALGIA_SOURCE"):
         cfg.source = env.strip().lower()
 
@@ -161,6 +176,7 @@ def save_config(cfg: Config, path: str | os.PathLike[str]) -> None:
         "source": cfg.source,
         "plex": asdict(cfg.plex),
         "jellyfin": asdict(cfg.jellyfin),
+        "nostalgiatv": asdict(cfg.nostalgiatv),
         "tmdb": asdict(cfg.tmdb),
         "routing": asdict(cfg.routing),
         "output": asdict(cfg.output),

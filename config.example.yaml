@@ -14,6 +14,12 @@ jellyfin:
   user_id: ""                          # optional; an admin is picked automatically
   libraries: []                        # opt-in per library. [] = all.
 
+nostalgiatv:
+  # Optional. Only the M3U playlist is read - a published interop format, never
+  # NostalgiaTV's private API - and only to pull real channel artwork.
+  m3u_url: ""                          # https://your-nostalgiatv/channels.m3u?profileId=...
+  auto_refresh_logos: true             # re-pull artwork after each scan
+
 tmdb:
   api_key: ""                          # same key Kometa uses
   rate_limit: 50                       # requests/sec. TMDB's documented ceiling.

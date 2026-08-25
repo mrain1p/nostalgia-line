@@ -715,11 +715,67 @@ async function loadLogos() {
   $('logo-coverage').innerHTML = lines.join('');
 }
 
+async function fetchPlaylistArtwork(url, resultId, badgeId) {
+  const target = $(resultId);
+  if (badgeId) setBadge(badgeId, 'testing', 'fetching…');
+  target.innerHTML = '<p class="hint">Fetching playlist and artwork…</p>';
+  try {
+    const r = await api('/api/logos/from-m3u', {
+      method: 'POST', body: JSON.stringify({ url: url || '' }),
+    });
+    const bits = [`<p class="result-ok">✓ Imported ${r.imported_count} channel logo(s).</p>`];
+    if (r.unmatched_count) {
+      bits.push(`<p class="hint">${r.unmatched_count} playlist entries are not NostalgiaTV
+        channels (live TV and the like) and were ignored.</p>`);
+    }
+    if (r.skipped_count) {
+      bits.push(`<p class="hint">${r.skipped_count} could not be fetched:
+        ${r.skipped.slice(0, 4).map((x) => `${esc(x.file)} (${esc(x.why)})`).join(', ')}</p>`);
+    }
+    target.innerHTML = bits.join('');
+    if (badgeId) setBadge(badgeId, r.imported_count ? 'ok' : 'err',
+      r.imported_count ? `${r.imported_count} logos` : 'nothing imported');
+    state.logoVersion += 1;
+    loadLogos(); loadChannels();
+  } catch (err) {
+    target.innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
+    if (badgeId) setBadge(badgeId, 'err', 'failed');
+  }
+}
+
+$('ntv-fetch').addEventListener('click', () =>
+  fetchPlaylistArtwork($('ntv-m3u').value.trim(), 'ntv-result', 'ntv-badge'));
+
+$('ntv-upload').addEventListener('click', () => $('ntv-file').click());
+
+$('ntv-file').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  $('ntv-result').innerHTML = '<p class="hint">Reading playlist…</p>';
+  const body = new FormData();
+  body.append('files', file, file.name);
+  try {
+    const response = await fetch('/api/logos', { method: 'POST', body });
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const r = await response.json();
+    $('ntv-result').innerHTML = `<p class="result-ok">✓ Imported ${r.imported_count}
+      logo(s) from ${esc(file.name)}.</p>
+      <p class="hint">The playlist names the artwork rather than containing it, so those
+      URLs had to be reachable from the server.</p>`;
+    setBadge('ntv-badge', r.imported_count ? 'ok' : 'err', `${r.imported_count} logos`);
+    state.logoVersion += 1;
+    loadLogos(); loadChannels();
+  } catch (err) {
+    $('ntv-result').innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
+  } finally {
+    event.target.value = '';
+  }
+});
+
 $('logo-import-btn').addEventListener('click', () => $('logo-files').click());
 
 $('logo-m3u-btn').addEventListener('click', async () => {
-  const url = $('logo-m3u').value.trim();
-  if (!url) { banner('Paste your NostalgiaTV M3U URL first.', 'err', 3000); return; }
+  const url = '';  // blank uses the playlist URL saved in Settings
   const button = $('logo-m3u-btn');
   button.disabled = true;
   $('logo-result').innerHTML = '<p class="hint">Fetching playlist and artwork…</p>';
@@ -893,6 +949,8 @@ async function loadSettings() {
   $('jellyfin-libraries').value = (settings.jellyfin_libraries || []).join(', ');
   $('jellyfin-key').placeholder = settings.jellyfin_api_key_set ? '•••••• (saved)' : 'required';
   $('tmdb-key').placeholder = settings.tmdb_api_key_set ? '•••••• (saved)' : 'required';
+  $('ntv-m3u').value = settings.nostalgiatv_m3u_url || '';
+  $('ntv-auto').checked = settings.auto_refresh_logos !== false;
   $('routing-mode').value = settings.routing_mode;
   $('multi-channel').value = settings.multi_channel;
   $('orphan-network').value = settings.orphan_network;
@@ -905,6 +963,8 @@ $('save-settings').addEventListener('click', async () => {
     plex_libraries: splitList($('plex-libraries').value),
     jellyfin_url: $('jellyfin-url').value.trim(),
     jellyfin_libraries: splitList($('jellyfin-libraries').value),
+    nostalgiatv_m3u_url: $('ntv-m3u').value.trim(),
+    auto_refresh_logos: $('ntv-auto').checked,
     routing_mode: $('routing-mode').value,
     multi_channel: $('multi-channel').value,
     orphan_network: $('orphan-network').value,

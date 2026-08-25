@@ -227,30 +227,20 @@ class LogoImporter:
                 self.ingest(name, archive.read(info), report)
         return report
 
-    async def import_from_m3u(self, url: str, concurrency: int = 8) -> ImportReport:
-        """Import artwork straight from an M3U playlist.
+    async def import_from_m3u_text(
+        self, text: str, concurrency: int = 8, client: "httpx.AsyncClient | None" = None
+    ) -> ImportReport:
+        """Import artwork for every channel in an already-loaded playlist.
 
-        NostalgiaTV publishes one for IPTV clients, with a `tvg-logo` per channel
-        and the channel's app key in the URL. That makes it an exact, public,
-        no-credentials source of the real artwork - and M3U is an interop format
-        rather than a private API, so depending on it is safe.
+        Split out from the URL fetch so an uploaded .m3u file works identically -
+        the logo URLs inside still have to be reachable either way.
         """
         report = ImportReport()
-        if not url.lower().startswith(("http://", "https://")):
-            report.skipped.append({"file": url, "why": "not an http(s) URL"})
-            return report
-
-        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-            except httpx.HTTPError as exc:
-                report.skipped.append({"file": url, "why": f"could not fetch: {exc}"})
-                return report
-
-            entries = parse_m3u(response.text)
+        owns_client = client is None
+        client = client or httpx.AsyncClient(timeout=45.0, follow_redirects=True)
+        try:
             wanted: list[tuple[M3UChannel, int]] = []
-            for entry in entries:
+            for entry in parse_m3u(text):
                 number = self.match_channel(entry)
                 if number is None:
                     report.unmatched.append(entry.name or entry.logo_url)
@@ -290,7 +280,34 @@ class LogoImporter:
                 )
 
             await asyncio.gather(*(grab(e, n) for e, n in wanted[:MAX_FILES]))
+        finally:
+            if owns_client:
+                await client.aclose()
         return report
+
+    async def import_from_m3u(self, url: str, concurrency: int = 8) -> ImportReport:
+        """Import artwork straight from an M3U playlist.
+
+        NostalgiaTV publishes one for IPTV clients, with a `tvg-logo` per channel
+        and the channel's app key in the URL. That makes it an exact, public,
+        no-credentials source of the real artwork - and M3U is an interop format
+        rather than a private API, so depending on it is safe.
+        """
+        report = ImportReport()
+        if not url.lower().startswith(("http://", "https://")):
+            report.skipped.append({"file": url, "why": "not an http(s) URL"})
+            return report
+
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                report.skipped.append({"file": url, "why": f"could not fetch: {exc}"})
+                return report
+            return await self.import_from_m3u_text(
+                response.text, concurrency=concurrency, client=client
+            )
 
     def installed(self) -> dict[int, str]:
         """Channel number -> stored filename, for what is already on disk."""

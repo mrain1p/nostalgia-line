@@ -103,6 +103,8 @@ class SettingsIn(BaseModel):
     jellyfin_url: str | None = None
     jellyfin_api_key: str | None = None
     jellyfin_libraries: list[str] | None = None
+    nostalgiatv_m3u_url: str | None = None
+    auto_refresh_logos: bool | None = None
     tmdb_api_key: str | None = None
     routing_mode: str | None = None
     multi_channel: str | None = None
@@ -121,7 +123,8 @@ class BulkOverrideIn(BaseModel):
 
 
 class M3UImportIn(BaseModel):
-    url: str
+    # Blank falls back to the saved playlist URL from Settings.
+    url: str = ""
 
 
 class NetworkMapIn(BaseModel):
@@ -200,6 +203,8 @@ def get_settings() -> dict:
         "jellyfin_url": cfg.jellyfin.url,
         "jellyfin_api_key_set": bool(cfg.jellyfin.api_key),
         "jellyfin_libraries": cfg.jellyfin.libraries,
+        "nostalgiatv_m3u_url": cfg.nostalgiatv.m3u_url,
+        "auto_refresh_logos": cfg.nostalgiatv.auto_refresh_logos,
         "tmdb_api_key_set": bool(cfg.tmdb.api_key),
         "routing_mode": cfg.routing.mode,
         "multi_channel": cfg.routing.multi_channel,
@@ -221,6 +226,10 @@ def put_settings(payload: SettingsIn) -> dict:
         cfg.jellyfin.api_key = payload.jellyfin_api_key.strip()
     if payload.jellyfin_libraries is not None:
         cfg.jellyfin.libraries = [s for s in payload.jellyfin_libraries if s.strip()]
+    if payload.nostalgiatv_m3u_url is not None:
+        cfg.nostalgiatv.m3u_url = payload.nostalgiatv_m3u_url.strip()
+    if payload.auto_refresh_logos is not None:
+        cfg.nostalgiatv.auto_refresh_logos = payload.auto_refresh_logos
     if payload.plex_url is not None:
         cfg.plex.url = payload.plex_url.strip()
     if payload.plex_token:
@@ -313,6 +322,7 @@ async def scan(include_movies: bool = False) -> dict:
             )
             state.progress = {"phase": "done", "done": 1, "total": 1}
             state.persist_result()
+            await _refresh_playlist_logos()
         except asyncio.CancelledError:
             state.progress = {"phase": "cancelled", "done": 0, "total": 0}
             state.last_error = "scan cancelled"
@@ -338,6 +348,20 @@ async def cancel_scan() -> dict:
     state.progress = {"phase": "cancelled", "done": 0, "total": 0}
     state.last_error = "scan cancelled"
     return {"cancelled": True}
+
+
+async def _refresh_playlist_logos() -> None:
+    """Pull artwork after a scan, so a new custom channel gets its logo."""
+    cfg = state.cfg.nostalgiatv
+    if not (cfg.auto_refresh_logos and cfg.m3u_url.strip()):
+        return
+    try:
+        importer = LogoImporter(
+            state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
+        )
+        await importer.import_from_m3u(cfg.m3u_url.strip())
+    except Exception:  # artwork is cosmetic - never fail a scan over it
+        pass
 
 
 @app.get("/api/library")
@@ -536,28 +560,31 @@ async def import_logos(files: list[UploadFile] = File(...)) -> dict:
     report = None
     plain: list[tuple[str, bytes]] = []
 
+    def merge(into, other):
+        if into is None:
+            return other
+        into.imported += other.imported
+        into.unmatched += other.unmatched
+        into.skipped += other.skipped
+        return into
+
     for upload in files:
         blob = await upload.read()
         name = upload.filename or "unnamed"
-        if name.lower().endswith(".zip"):
-            zip_report = importer.import_zip(blob)
-            if report is None:
-                report = zip_report
-            else:
-                report.imported += zip_report.imported
-                report.unmatched += zip_report.unmatched
-                report.skipped += zip_report.skipped
+        if name.lower().endswith((".m3u", ".m3u8")):
+            # A playlist names the artwork rather than containing it, so the
+            # logo URLs inside still have to be reachable from here.
+            report = merge(
+                report,
+                await importer.import_from_m3u_text(blob.decode("utf-8", errors="replace")),
+            )
+        elif name.lower().endswith(".zip"):
+            report = merge(report, importer.import_zip(blob))
         else:
             plain.append((name, blob))
 
     if plain:
-        file_report = importer.import_files(plain)
-        if report is None:
-            report = file_report
-        else:
-            report.imported += file_report.imported
-            report.unmatched += file_report.unmatched
-            report.skipped += file_report.skipped
+        report = merge(report, importer.import_files(plain))
 
     if report is None:
         raise HTTPException(status_code=400, detail="no files uploaded")
@@ -570,7 +597,17 @@ async def import_logos_from_m3u(payload: M3UImportIn) -> dict:
     importer = LogoImporter(
         state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
     )
-    report = await importer.import_from_m3u(payload.url.strip())
+    url = payload.url.strip() or state.cfg.nostalgiatv.m3u_url.strip()
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="no playlist URL - set one on the Settings tab, or pass one here",
+        )
+    report = await importer.import_from_m3u(url)
+    # Remember a URL that worked, so it becomes a one-time setup step.
+    if report.imported and not state.cfg.nostalgiatv.m3u_url:
+        state.cfg.nostalgiatv.m3u_url = url
+        save_config(state.cfg, state.config_path)
     return report.to_dict()
 
 

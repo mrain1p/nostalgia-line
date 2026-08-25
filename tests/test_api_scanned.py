@@ -655,3 +655,50 @@ def test_a_read_only_mount_is_read(client, tmp_path, monkeypatch):
     assert rows[1068]["logo_source"] == "file"
     assert client.get("/api/channel-logo/1068").content.startswith(b"\x89PNG")
     assert str(mount) in client.get("/api/logos").json()["extra_dirs"]
+
+
+# -- the saved playlist setting ------------------------------------------
+
+
+def test_the_playlist_url_is_a_saved_setting(client):
+    url = "https://tv.example/channels.m3u?profileId=abc"
+    body = client.post("/api/settings", json={"nostalgiatv_m3u_url": url}).json()
+    assert body["nostalgiatv_m3u_url"] == url
+    assert body["auto_refresh_logos"] is True
+
+    import yaml
+
+    saved = yaml.safe_load(client.server_module.state.config_path.read_text(encoding="utf-8"))
+    assert saved["nostalgiatv"]["m3u_url"] == url
+    client.post("/api/settings", json={"nostalgiatv_m3u_url": ""})
+
+
+def test_auto_refresh_can_be_turned_off(client):
+    assert client.post("/api/settings", json={"auto_refresh_logos": False}).json()[
+        "auto_refresh_logos"
+    ] is False
+    client.post("/api/settings", json={"auto_refresh_logos": True})
+
+
+def test_importing_with_no_url_anywhere_is_a_clear_error(client):
+    client.post("/api/settings", json={"nostalgiatv_m3u_url": ""})
+    response = client.post("/api/logos/from-m3u", json={"url": ""})
+    assert response.status_code == 400
+    assert "Settings" in response.json()["detail"]
+
+
+def test_an_uploaded_playlist_file_is_parsed(client):
+    """A .m3u names artwork rather than containing it, so unreachable URLs are
+    reported as skipped - but the entries must still be matched to channels."""
+    m3u = (
+        b'#EXTM3U\n'
+        b'#EXTINF:-1 tvg-name="Dizzy Channel" '
+        b'tvg-logo="http://127.0.0.1:9/api/channels/app_dizzy_channel/logo",Dizzy Channel\n'
+        b'http://127.0.0.1:9/stream/app_dizzy_channel\n'
+    )
+    body = client.post(
+        "/api/logos", files=[("files", ("channels.m3u", m3u, "audio/x-mpegurl"))]
+    ).json()
+    assert body["imported_count"] == 0, "the logo host is unreachable in a test"
+    assert body["skipped_count"] == 1, "but the channel was matched and attempted"
+    assert body["unmatched_count"] == 0
