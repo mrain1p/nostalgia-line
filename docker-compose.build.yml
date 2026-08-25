@@ -12,5 +12,7 @@ services:
       - ./config:/config
     environment:
       - TZ=America/New_York
+      # Optional. Without one the app is open on your LAN, which is the default.
+      # - NOSTALGIA_PASSWORD=something-long
     # user: "1000:1000"
     restart: unless-stopped

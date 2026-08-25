@@ -1523,7 +1523,60 @@ $('export-form').addEventListener('submit', async (event) => {
   }
 });
 
+/* ── access ───────────────────────────────────────────────── */
+async function checkAuth() {
+  try {
+    const s = await api('/api/auth/status');
+    if (s.enabled && !s.authenticated) {
+      $('login-dialog').showModal();
+      return false;
+    }
+    const badge = $('auth-badge');
+    if (badge) {
+      badge.dataset.state = s.enabled ? 'ok' : 'testing';
+      badge.textContent = s.enabled ? 'password set' : 'open';
+    }
+  } catch { /* an unreachable server is reported elsewhere */ }
+  return true;
+}
+
+$('login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    await api('/api/auth/login', {
+      method: 'POST', body: JSON.stringify({ password: $('login-password').value }),
+    });
+    $('login-dialog').close();
+    location.reload();
+  } catch (err) {
+    $('login-error').innerHTML = `<p class="result-err">${esc(err.message)}</p>`;
+  }
+});
+
+$('auth-save').addEventListener('click', async () => {
+  const password = $('auth-password').value;
+  try {
+    const r = await api('/api/auth/password', {
+      method: 'POST', body: JSON.stringify({ password }),
+    });
+    $('auth-password').value = '';
+    $('auth-result').innerHTML = `<p class="result-ok">✓ ${r.enabled
+      ? 'Password set. Every session was signed out.' : 'Password removed.'}</p>`;
+    checkAuth();
+  } catch (err) {
+    $('auth-result').innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
+  }
+});
+
+$('auth-clear').addEventListener('click', async () => {
+  if (!confirm('Remove the password and leave the app open?')) return;
+  await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ password: '' }) });
+  $('auth-result').innerHTML = '<p class="hint">Password removed.</p>';
+  checkAuth();
+});
+
 /* ── boot ──────────────────────────────────────────────────── */
+checkAuth();
 refreshStatus();
 loadLibrary();
 setReviewMode('grouped');

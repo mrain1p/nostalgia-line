@@ -30,6 +30,8 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=America/New_York
+      # Optional. Without one the app is open on your LAN, which is the default.
+      # - NOSTALGIA_PASSWORD=something-long
       # Optional — the Settings tab writes these into /config/config.yaml for you.
       # - NOSTALGIA_SOURCE=plex        # plex | jellyfin
       # - PLEX_URL=http://192.168.1.245:32400

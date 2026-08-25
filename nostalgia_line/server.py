@@ -11,10 +11,19 @@ from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .auth import (
+    COOKIE,
+    OPEN_PATHS,
+    Sessions,
+    hash_password,
+    password_from_env,
+    verify_password,
+)
 from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED
 from .channels import (
     ChannelCatalog,
@@ -58,6 +67,7 @@ class AppState:
         self.result: ScanResult | None = ScanResult.load(self.scan_path)
         self.scan_task: asyncio.Task | None = None
         self.progress: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0}
+        self.sessions = Sessions()
         self.last_error: str = ""
         self.last_export: dict | None = None
         # Set whenever a routing input changes. The displayed scan was produced
@@ -82,6 +92,16 @@ class AppState:
         if self.result is not None:
             self.stale = True
             self.stale_reason = reason
+
+    @property
+    def password_hash(self) -> str:
+        """A password from the environment wins, so compose can enforce one."""
+        env = password_from_env()
+        return hash_password(env) if env else self.cfg.server.password_hash
+
+    @property
+    def locked(self) -> bool:
+        return bool(self.password_hash)
 
     @property
     def configured(self) -> bool:
@@ -152,6 +172,80 @@ class StationIn(BaseModel):
 
 class ExportIn(BaseModel):
     include_review: bool = False
+
+
+# -- optional access control ----------------------------------------------
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Gate /api behind a session when a password is set. Off by default."""
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if not path.startswith("/api") or path in OPEN_PATHS or not state.locked:
+            return await call_next(request)
+        if state.sessions.valid(request.cookies.get(COOKIE)):
+            return await call_next(request)
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+
+
+app.add_middleware(AuthMiddleware)
+
+
+class LoginIn(BaseModel):
+    password: str
+
+
+class PasswordIn(BaseModel):
+    password: str = ""
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request) -> dict:
+    return {
+        "enabled": state.locked,
+        "authenticated": (not state.locked)
+        or state.sessions.valid(request.cookies.get(COOKIE)),
+        "enforced_by_env": bool(password_from_env()),
+    }
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginIn) -> JSONResponse:
+    if not state.locked:
+        return JSONResponse({"authenticated": True, "note": "no password is set"})
+    if not verify_password(payload.password, state.password_hash):
+        raise HTTPException(status_code=401, detail="wrong password")
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        COOKIE, state.sessions.issue(), httponly=True, samesite="lax", max_age=2592000
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request) -> JSONResponse:
+    state.sessions.revoke(request.cookies.get(COOKIE))
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(COOKIE)
+    return response
+
+
+@app.post("/api/auth/password")
+def auth_set_password(payload: PasswordIn) -> dict:
+    """Set or clear the password. Clearing leaves the app open, as it starts."""
+    if password_from_env():
+        raise HTTPException(
+            status_code=400,
+            detail="the password is set by NOSTALGIA_PASSWORD; change it there",
+        )
+    password = payload.password.strip()
+    if password and len(password) < 6:
+        raise HTTPException(status_code=400, detail="use at least 6 characters")
+    state.cfg.server.password_hash = hash_password(password) if password else ""
+    save_config(state.cfg, state.config_path)
+    state.sessions.clear()
+    return {"enabled": bool(password)}
 
 
 # -- meta -----------------------------------------------------------------

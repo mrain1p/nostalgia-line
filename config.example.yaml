@@ -25,6 +25,7 @@ tmdb:
   rate_limit: 50                       # requests/sec. TMDB's documented ceiling.
 
 routing:
+  include_movies: false                # films route on genre/era alone - opt in
   mode: streaming_first                # streaming_first | hybrid | themed
   multi_channel: sanctioned_pairs_only # off | sanctioned_pairs_only | permissive
   orphan_network: parent_fallback      # parent_fallback | content_type | flag_only
@@ -44,3 +45,4 @@ data:
 server:
   host: 127.0.0.1
   port: 8777
+  password_hash: ""                    # set from Settings > Access, not by hand

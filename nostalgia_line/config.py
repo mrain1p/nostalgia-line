@@ -89,6 +89,9 @@ class DataConfig:
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8777
+    # Empty means no authentication, which is the default: this is a LAN tool and
+    # a password would be friction. Set one if it is reachable from anywhere else.
+    password_hash: str = ""
 
 
 @dataclass
@@ -118,6 +121,7 @@ class Config:
         d["plex"]["token"] = bool(self.plex.token)
         d["jellyfin"]["api_key"] = bool(self.jellyfin.api_key)
         d["tmdb"]["api_key"] = bool(self.tmdb.api_key)
+        d["server"]["password_hash"] = bool(self.server.password_hash)
         return d
 
 

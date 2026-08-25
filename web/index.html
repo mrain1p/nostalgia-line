@@ -38,6 +38,22 @@
 
 <div id="banner" class="banner is-hidden"></div>
 
+<dialog id="login-dialog">
+  <form method="dialog" id="login-form">
+    <header class="dialog-head">
+      <div>
+        <h3>Nostalgia Line is locked</h3>
+        <p>Enter the password to continue.</p>
+      </div>
+    </header>
+    <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+    <div id="login-error" class="test-result"></div>
+    <footer class="dialog-foot">
+      <button class="btn btn-primary" value="go">Unlock</button>
+    </footer>
+  </form>
+</dialog>
+
 <div id="stale-bar" class="notice notice-warn is-hidden">
   <span id="stale-text"></span>
   <button id="stale-rescan" class="btn btn-small">Re-scan now</button>
@@ -429,6 +445,27 @@
           </select>
         </label>
         </div>
+      </section>
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>Access</h3>
+            <p>Nostalgia Line holds your Plex token and writes files. On a trusted
+               LAN a password is only friction, so there is none by default — set
+               one if this is reachable from anywhere else.</p>
+          </div>
+          <span class="test-badge" id="auth-badge"></span>
+        </header>
+        <label class="field">Password
+          <input type="password" id="auth-password" placeholder="leave blank for no password" autocomplete="new-password">
+          <small>At least 6 characters. Saving signs out every existing session.</small>
+        </label>
+        <div class="card-foot">
+          <button class="btn" type="button" id="auth-save">Save password</button>
+          <button class="btn btn-ghost" type="button" id="auth-clear">Remove password</button>
+        </div>
+        <div id="auth-result" class="test-result"></div>
       </section>
 
       <section class="card settings-card">
