@@ -7,6 +7,7 @@ and reused across runs. The only field that matters for series routing lives in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -16,11 +17,6 @@ import httpx
 
 API_ROOT = "https://api.themoviedb.org/3"
 
-# Bump when a cached payload gains a field the app now depends on. Entries
-# written by an older version are treated as misses and refetched, rather than
-# silently deserialising with the new field empty - which is exactly how network
-# logos came back blank on an install with a warm cache.
-CACHE_SCHEMA = 2
 
 
 class TMDBError(RuntimeError):
@@ -112,6 +108,22 @@ class TMDBMovie:
     @classmethod
     def from_dict(cls, raw: dict) -> "TMDBMovie":
         return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+
+
+def _cache_schema() -> str:
+    """A token derived from the cached record shapes.
+
+    Deliberately not a hand-maintained integer. Twice now a new field was added
+    without bumping one, and every warm cache went on serving records with the
+    field silently blank - which looks like a broken feature rather than a stale
+    cache. Deriving it from the field names means adding a field invalidates the
+    cache on its own.
+    """
+    names = sorted(TMDBSeries.__dataclass_fields__) + sorted(TMDBMovie.__dataclass_fields__)
+    return hashlib.sha1(",".join(names).encode()).hexdigest()[:10]
+
+
+CACHE_SCHEMA = _cache_schema()
 
 
 class _RateLimiter:

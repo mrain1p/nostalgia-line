@@ -193,3 +193,30 @@ def test_network_logos_survive_a_cache_round_trip(tmp_path):
 
     restored = TMDBSeries.from_dict(TMDBCache(tmp_path).get("series", 1396))
     assert restored.network_logos == {"AMC": "/pmvRmATOCaDykE6JrVoeYxlFHw3.png"}
+
+
+def test_adding_a_cached_field_invalidates_the_cache_by_itself(tmp_path, monkeypatch):
+    """The regression this closes: a field was added twice without bumping a
+    hand-maintained schema number, so every warm cache kept serving records with
+    the new field blank and the feature looked broken."""
+    import json
+
+    from nostalgia_line import tmdb as tmdb_module
+    from nostalgia_line.tmdb import TMDBCache
+
+    cache = TMDBCache(tmp_path)
+    cache.put("series", 1396, {"tmdb_id": 1396, "name": "Breaking Bad"})
+    cache.flush()
+    assert cache.get("series", 1396) is not None
+
+    # Simulate a release that adds a field to the cached record.
+    monkeypatch.setattr(tmdb_module, "CACHE_SCHEMA", "different-shape")
+    assert TMDBCache(tmp_path).get("series", 1396) is None
+
+
+def test_the_schema_token_tracks_the_record_fields():
+    from nostalgia_line.tmdb import CACHE_SCHEMA, TMDBSeries
+
+    assert "network_ids" in TMDBSeries.__dataclass_fields__
+    assert "network_logos" in TMDBSeries.__dataclass_fields__
+    assert len(CACHE_SCHEMA) == 10, "a stable, short token"
