@@ -249,3 +249,21 @@ def test_awkward_titles_survive_a_round_trip(catalog, defaults, tmp_path):
     titles = {r.title for r in reloaded.rows}
     for t in awkward:
         assert t in titles, f"{t!r} did not survive the round trip"
+
+
+def test_preflight_passes_on_a_clean_export(result, catalog, defaults):
+    from nostalgia_line.export import preflight
+
+    report = preflight(result, catalog, defaults)
+    assert report["ok"] is True
+    assert all(c["ok"] for c in report["checks"])
+    names = {c["name"] for c in report["checks"]}
+    assert "Every original row survives verbatim" in names
+    assert "Non-numeric years kept as written" in names
+
+
+def test_preflight_writes_nothing(result, catalog, defaults, tmp_path):
+    from nostalgia_line.export import preflight
+
+    preflight(result, catalog, defaults)
+    assert list(tmp_path.iterdir()) == []

@@ -24,7 +24,7 @@ from .channels import (
     normalize_title,
 )
 from .config import SOURCES, Config, load_config, save_config
-from .export import build_addition_rows
+from .export import build_addition_rows, preflight as run_preflight
 from .export import export as run_export
 from .pipeline import ScanResult, apply_override, run_scan
 from .posters import DEFAULT_SIZE, PosterCache
@@ -1062,6 +1062,14 @@ def export_preview(include_review: bool = False) -> dict:
             for r in rows[:10]
         ],
     }
+
+
+@app.get("/api/export/preflight")
+def export_preflight(include_review: bool = False) -> dict:
+    """Would this import cleanly? Checked before anything is written."""
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    return run_preflight(state.result, state.catalog, state.defaults, include_review)
 
 
 @app.post("/api/export")

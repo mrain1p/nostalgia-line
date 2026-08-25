@@ -600,10 +600,158 @@ $('assign-form').addEventListener('submit', async (event) => {
   }
 });
 
+/** Review clusters by cause. Twenty-two of a fifty-nine item queue were four or
+ *  five titles each from one unmapped network, and mapping that network clears
+ *  the lot - so group by the fix, not by the title. */
+function groupReview(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const reason = item.review_reason || '';
+    let key, label, kind, network = item.network || '';
+    if (network && /unmapped network|orphan network/i.test(reason)) {
+      key = `net:${network}`;
+      kind = 'network';
+      label = network;
+    } else if (/genre fallback/i.test(reason)) {
+      key = 'genre';
+      kind = 'genre';
+      label = 'Placed by genre alone';
+    } else if (/no TMDB record/i.test(reason)) {
+      key = 'notmdb';
+      kind = 'notmdb';
+      label = 'No TMDB record';
+    } else {
+      key = `other:${reason.slice(0, 40)}`;
+      kind = 'other';
+      label = reason.slice(0, 60) || 'Other';
+    }
+    if (!groups.has(key)) groups.set(key, { key, kind, label, network, items: [] });
+    groups.get(key).items.push(item);
+  }
+  return [...groups.values()].sort((a, b) => b.items.length - a.items.length);
+}
+
+const GROUP_BLURB = {
+  network: 'These share one network. Map it once and every title moves together.',
+  genre: 'Nothing but the genre placed these, which is the least reliable rule. Worth a look.',
+  notmdb: 'Plex never matched these to TMDB, so nothing can route them. Fix the match in Plex, then re-scan.',
+  other: '',
+};
+
+function renderReviewGroups(items) {
+  const groups = groupReview(items);
+  const channelOptions = state.channels
+    .map((c) => `<option value="${c.number}">${c.number} ${esc(c.name)}</option>`).join('');
+
+  $('review-groups').innerHTML = groups.map((g) => `
+    <div class="rev-group" data-group="${esc(g.key)}">
+      <div class="rev-head" data-toggle="${esc(g.key)}">
+        <div style="flex:1;min-width:0">
+          <h4>${esc(g.label)}</h4>
+          <div class="sub">${esc(GROUP_BLURB[g.kind] || '')}</div>
+        </div>
+        <span class="rev-count">${g.items.length}</span>
+      </div>
+      ${g.kind === 'network' ? `<div class="rev-fix">
+        <span class="hint">Send every ${esc(g.network)} title to</span>
+        <select data-map-group="${esc(g.network)}"><option value="">— pick a channel —</option>${channelOptions}</select>
+        <button class="btn btn-small btn-primary" data-map-go="${esc(g.network)}">Map network</button>
+        <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
+      </div>` : `<div class="rev-fix">
+        <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
+        <button class="btn btn-small" data-assign-group="${esc(g.key)}">Assign all to…</button>
+      </div>`}
+      <div class="rev-body is-hidden" data-body="${esc(g.key)}">
+        ${g.items.map((i) => `
+          <div class="rev-item">
+            ${i.poster_path
+              ? `<img class="art" loading="lazy" src="${esc(posterUrl(i.poster_path, 'w92'))}" alt="">`
+              : '<div class="art"></div>'}
+            <div class="rev-item-main">
+              <div class="t">${esc(i.title)}</div>
+              <div class="s">${i.year ?? '—'} · ${i.episode_count || 0} eps · ${
+                (i.channels[0] && `${i.channels[0].number} ${i.channels[0].name}`) || 'unplaced'}</div>
+            </div>
+            <div class="rev-actions">
+              <button class="btn btn-small" data-detail="${esc(i.uid)}">Details</button>
+              <button class="btn btn-small" data-assign="${esc(i.uid)}">Assign</button>
+              <button class="btn btn-small btn-ghost" data-dismiss="${esc(i.uid)}">Accept</button>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`).join('') || '';
+
+  $('review-hint').textContent = groups.length
+    ? `${items.length} to review in ${groups.length} group(s) — fixing a group clears all of it.`
+    : '';
+}
+
+$('review-groups').addEventListener('click', async (event) => {
+  const toggle = event.target.closest('[data-toggle]');
+  if (toggle) {
+    const body = document.querySelector(`[data-body="${CSS.escape(toggle.dataset.toggle)}"]`);
+    body.classList.toggle('is-hidden');
+    return;
+  }
+
+  const mapGo = event.target.closest('[data-map-go]');
+  if (mapGo) {
+    const network = mapGo.dataset.mapGo;
+    const select = document.querySelector(`[data-map-group="${CSS.escape(network)}"]`);
+    if (!select.value) { banner('Pick a channel first.', 'err', 2500); return; }
+    try {
+      const r = await api('/api/networks/map', {
+        method: 'POST', body: JSON.stringify({ network, channel: Number(select.value) }),
+      });
+      banner(`Every ${network} title will route to ${r.channel_name}. Re-scan to apply.`, 'ok', 5000);
+      refreshStatus();
+    } catch (err) { banner(err.message, 'err'); }
+    return;
+  }
+
+  const acceptGroup = event.target.closest('[data-accept-group]');
+  if (acceptGroup) {
+    const key = acceptGroup.dataset.acceptGroup;
+    const group = groupReview(reviewItems).find((g) => g.key === key);
+    if (!group || !confirm(`Accept all ${group.items.length} placements in "${group.label}"?`)) return;
+    for (const item of group.items) {
+      await api(`/api/dismiss/${encodeURIComponent(item.uid)}`, { method: 'POST' });
+    }
+    banner(`Accepted ${group.items.length} placement(s).`, 'ok', 3000);
+    loadReview(); refreshStatus();
+    return;
+  }
+
+  const assignGroup = event.target.closest('[data-assign-group]');
+  if (assignGroup) {
+    const key = assignGroup.dataset.assignGroup;
+    const group = groupReview(reviewItems).find((g) => g.key === key);
+    if (!group) return;
+    state.selected = new Set(group.items.map((i) => i.uid));
+    openAssign(null, 'replace');
+  }
+});
+
+$('rev-grouped').addEventListener('click', () => setReviewMode('grouped'));
+$('rev-flat').addEventListener('click', () => setReviewMode('flat'));
+
+function setReviewMode(mode) {
+  const grouped = mode === 'grouped';
+  $('rev-grouped').classList.toggle('is-on', grouped);
+  $('rev-flat').classList.toggle('is-on', !grouped);
+  $('review-groups').classList.toggle('is-hidden', !grouped);
+  $('review-list').classList.toggle('is-hidden', grouped);
+}
+
+let reviewItems = [];
+
 /* ── review queue ──────────────────────────────────────────── */
 async function loadReview() {
   let data;
   try { data = await api('/api/review'); } catch { return; }
+  await ensureChannels();
+  reviewItems = data.items;
+  renderReviewGroups(data.items);
   const list = $('review-list');
   $('review-empty').classList.toggle('is-hidden', data.total > 0);
   list.innerHTML = data.items.map((item) => `
@@ -1329,7 +1477,10 @@ async function refreshExportPreview() {
   const include = $('export-review').checked;
   $('export-preview').innerHTML = '<p class="hint">Calculating…</p>';
   try {
-    const p = await api(`/api/export/preview?include_review=${include}`);
+    const [p, pre] = await Promise.all([
+      api(`/api/export/preview?include_review=${include}`),
+      api(`/api/export/preflight?include_review=${include}`),
+    ]);
     const top = p.top_channels
       .map((c) => `<li>${c.number} ${esc(c.name)} — ${c.rows} row(s)</li>`).join('');
     $('export-preview').innerHTML = `
@@ -1340,7 +1491,11 @@ async function refreshExportPreview() {
         <div class="stat"><b>${p.merged_rows}</b><span>Merged total</span></div>
       </div>
       <p class="hint">Your ${p.original_rows} existing rows are preserved untouched.</p>
-      ${top ? `<p class="hint"><strong>Most affected channels</strong></p><ul class="mini">${top}</ul>` : ''}`;
+      ${top ? `<p class="hint"><strong>Most affected channels</strong></p><ul class="mini">${top}</ul>` : ''}
+      <p class="hint" style="margin-top:12px"><strong>Preflight</strong></p>
+      <ul class="mini">${pre.checks.map((c) => `<li class="${c.ok ? 'result-ok' : 'result-err'}">
+        ${c.ok ? '✓' : '✗'} ${esc(c.name)} <span class="muted">— ${esc(c.detail)}</span></li>`).join('')}</ul>`;
+    $('export-write').disabled = !pre.ok;
   } catch (err) {
     $('export-preview').innerHTML = `<p class="result-err">${esc(err.message)}</p>`;
   }
@@ -1366,4 +1521,5 @@ $('export-form').addEventListener('submit', async (event) => {
 /* ── boot ──────────────────────────────────────────────────── */
 refreshStatus();
 loadLibrary();
+setReviewMode('grouped');
 setInterval(refreshStatus, 5000);
