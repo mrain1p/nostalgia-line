@@ -342,6 +342,7 @@ class ScanResult:
                         {"number": n, "name": catalog.name_of(n), "titles": c}
                         for n, c in sorted(landing.items(), key=lambda kv: -kv[1])
                     ],
+                    "has_logo": network in self.network_logos,
                     "samples": [e.title for e in group[:6]],
                 }
             )

@@ -750,6 +750,35 @@ def clear_logos() -> dict:
     return {"removed": importer.clear()}
 
 
+@app.get("/api/station-logo")
+async def station_logo(network: str):
+    """The real station's own logo, from TMDB.
+
+    Harvested during the scan from the same payload that gives us the network
+    name, so it costs nothing extra. Served through the poster cache.
+    """
+    if state.result is None:
+        raise HTTPException(status_code=404, detail="run a scan first")
+    logo_path = state.result.network_logos.get(network)
+    if not logo_path:
+        # Try case-insensitively; TMDB is not always consistent about casing.
+        folded = network.casefold()
+        logo_path = next(
+            (p for n, p in state.result.network_logos.items() if n.casefold() == folded),
+            None,
+        )
+    if not logo_path:
+        raise HTTPException(status_code=404, detail=f"no logo for {network}")
+    local = await state.posters.fetch(logo_path, "w154")
+    if local is None:
+        raise HTTPException(status_code=404, detail="logo unavailable")
+    return FileResponse(
+        local,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
+
+
 @app.get("/api/channel-logo/{number}")
 async def channel_logo(number: int):
     """A channel's logo.

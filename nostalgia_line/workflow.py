@@ -115,8 +115,10 @@ def build(
         Step(
             "apply",
             "Apply in NostalgiaTV",
-            "Upload the merged file in NostalgiaTV, then import it back here so "
-            "Nostalgia Line knows those titles are settled rather than suggestions.",
+            "Upload channels_merged.csv in NostalgiaTV, then import it back here so "
+            "Nostalgia Line counts those titles as settled rather than as its own "
+            "suggestions. It cannot check NostalgiaTV itself, so this step is judged "
+            "by what comes back.",
             action="import",
             action_label="Import it back",
         ),
@@ -170,10 +172,16 @@ def build(
         by_key["export"].detail = "Nothing new to add."
 
     # 5. apply - the loop is only closed once the merged file is back in here
+    # We cannot see inside NostalgiaTV, so this step is inferred, never verified.
+    # Say what is actually known - the lineup here grew - rather than implying the
+    # upload was checked.
     applied = pending_additions == 0 and baseline_at is not None
     if applied:
         by_key["apply"].state = DONE
-        by_key["apply"].detail = f"Your lineup holds {lineup_rows} rows."
+        by_key["apply"].detail = (
+            f"Nothing pending. The lineup loaded here holds {lineup_rows} rows. "
+            f"Nostalgia Line cannot see inside NostalgiaTV, so check there if unsure."
+        )
     elif pending_additions == 0 and last_export_at is None:
         by_key["apply"].state = DONE
         by_key["apply"].detail = "Nothing to apply."

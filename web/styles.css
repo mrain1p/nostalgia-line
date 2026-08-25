@@ -650,3 +650,19 @@ tbody tr.is-clickable { cursor: pointer; }
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
 }
 #more-filters .count { background: var(--accent-glow); color: var(--accent); }
+
+/* ── station artwork and the station-to-channel pairing ───── */
+.art-station {
+  width: 52px; height: 32px; object-fit: contain; display: block; flex: none;
+  border-radius: 5px; padding: 3px;
+  /* TMDB station marks are black on transparent; they need a light ground. */
+  background: #eef2f7; border: 1px solid #cdd6e0;
+}
+.art-station.sm { width: 40px; height: 26px; }
+.pairing { display: flex; align-items: center; gap: 9px; }
+.pairing .arrow { color: var(--ink-3); font-size: 13px; flex: none; }
+.pairing-none { color: var(--ink-3); font-size: 12px; font-style: italic; }
+.station-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.station-cell .names { min-width: 0; }
+.rev-head .art-station { margin-right: 2px; }
+.detail-station { display: flex; align-items: center; gap: 9px; margin-top: 8px; }

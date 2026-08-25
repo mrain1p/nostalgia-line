@@ -101,3 +101,16 @@ def test_the_dict_shape_the_ui_reads():
     assert set(d) == {"steps", "current", "complete", "done_count", "total"}
     assert d["total"] == 5
     assert all(set(s) >= {"key", "title", "blurb", "state", "action"} for s in d["steps"])
+
+
+def test_the_apply_step_never_claims_it_checked_nostalgiatv():
+    """It infers success from what comes back, and must say so - an app that
+    reports knowledge it does not have is the same class of bug as a stale
+    cache reporting a feature works."""
+    w = at(pending_additions=0, last_export_at=1.0, baseline_at=2.0, lineup_rows=4938)
+    detail = w.steps[-1].detail
+    assert "cannot see inside NostalgiaTV" in detail
+    assert "4938" in detail
+
+    blurb = w.steps[-1].blurb
+    assert "cannot check NostalgiaTV itself" in blurb

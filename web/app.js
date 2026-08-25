@@ -8,6 +8,14 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
 const posterUrl = (path, size = 'w185') =>
   path ? `/api/poster?path=${encodeURIComponent(path)}&size=${size}` : '';
 const logoUrl = (number) => `/api/channel-logo/${number}`;
+const stationLogoUrl = (network) => `/api/station-logo?network=${encodeURIComponent(network)}`;
+
+/** A station's mark, or nothing at all - an empty box is worse than no box. */
+function stationArt(network, hasLogo = true, extra = '') {
+  if (!network || !hasLogo) return '';
+  return `<img class="art-station ${extra}" loading="lazy" decoding="async" alt=""
+    src="${esc(stationLogoUrl(network))}" onerror="this.remove()">`;
+}
 
 /** "12 minutes ago" — provenance is only useful if it reads at a glance. */
 function ago(epochSeconds) {
@@ -731,12 +739,14 @@ const GROUP_BLURB = {
 
 function renderReviewGroups(items) {
   const groups = groupReview(items);
+  const biggest = groups.length ? groups[0].items.length : 0;
   const channelOptions = state.channels
     .map((c) => `<option value="${c.number}">${c.number} ${esc(c.name)}</option>`).join('');
 
   $('review-groups').innerHTML = groups.map((g) => `
     <div class="rev-group" data-group="${esc(g.key)}">
       <div class="rev-head" data-toggle="${esc(g.key)}">
+        ${g.kind === 'network' ? stationArt(g.network) : ''}
         <div style="flex:1;min-width:0">
           <h4>${esc(g.label)}</h4>
           <div class="sub">${esc(GROUP_BLURB[g.kind] || '')}</div>
@@ -752,7 +762,7 @@ function renderReviewGroups(items) {
         <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
         <button class="btn btn-small" data-assign-group="${esc(g.key)}">Assign all to…</button>
       </div>`}
-      <div class="rev-body is-hidden" data-body="${esc(g.key)}">
+      <div class="rev-body ${g.items.length === biggest ? '' : 'is-hidden'}" data-body="${esc(g.key)}">
         ${g.items.map((i) => `
           <div class="rev-item">
             ${i.poster_path
@@ -930,9 +940,13 @@ function renderNetworks() {
     const shown = n.landing.slice(0, 3);
     const rest = n.landing.length - shown.length;
     const landing = n.landing.length
-      ? shown.map((l) => `<span class="chip" title="${l.titles} title(s)">${l.number} ${esc(l.name)}</span>`).join('')
-        + (rest > 0 ? `<span class="muted" title="${n.landing.map((l) => `${l.number} ${l.name} (${l.titles})`).join(', ')}">+${rest} more</span>` : '')
-      : '<span class="muted">nowhere</span>';
+      ? `<div class="pairing">
+          <img class="art-logo art-logo-file sm" loading="lazy" alt=""
+            src="${esc(logoUrl(n.landing[0].number))}?v=${state.logoVersion}">
+          <div>${shown.map((l) => `<span class="chip" title="${l.titles} title(s)">${l.number} ${esc(l.name)}</span>`).join('')}
+          ${rest > 0 ? `<span class="muted" title="${n.landing.map((l) => `${l.number} ${l.name} (${l.titles})`).join(', ')}">+${rest} more</span>` : ''}</div>
+        </div>`
+      : '<span class="pairing-none">not routed anywhere yet</span>';
     const scattered = n.landing.length >= 4 && n.status !== 'mapped'
       ? `<span class="scatter" title="These titles landed on ${n.landing.length} different channels because nothing maps this network">scattered across ${n.landing.length}</span>`
       : '';
@@ -941,8 +955,13 @@ function renderNetworks() {
       .join('');
     return `<tr>
       <td class="title-cell">
-        <button class="btn-link" data-network="${esc(n.network)}">${esc(n.network)}</button>
-        <div class="samples">${n.samples.map(esc).join(' · ')}</div>
+        <div class="station-cell">
+          ${stationArt(n.network, n.has_logo)}
+          <div class="names">
+            <button class="btn-link" data-network="${esc(n.network)}">${esc(n.network)}</button>
+            <div class="samples">${n.samples.map(esc).join(' · ')}</div>
+          </div>
+        </div>
       </td>
       <td class="num">${n.titles}</td>
       <td class="num">${n.episodes}</td>
@@ -1033,8 +1052,10 @@ async function openDetail(uid) {
         : '<div class="detail-art"></div>'}
       <div>
         <h3>${esc(item.title)}</h3>
-        <div class="detail-meta">${item.year ?? '—'}${item.network ? ` · ${esc(item.network)}` : ''}</div>
-        <div class="detail-meta"><span class="src src-${esc(item.mapping_source)}">${esc(item.mapping_source)}</span></div>
+        <div class="detail-meta">${item.year ?? '—'}</div>
+        ${item.network ? `<div class="detail-station">${stationArt(item.network)}
+          <span class="detail-meta">${esc(item.network)}</span></div>` : ''}
+        <div class="detail-meta" style="margin-top:6px"><span class="src src-${esc(item.mapping_source)}">${esc(item.mapping_source)}</span></div>
       </div>
     </div>
 
@@ -1088,6 +1109,19 @@ $('seg-network').addEventListener('click', async () => {
   if (networkCatalog === null) await loadNetworkCatalog();
   else renderNetworkCatalog();
 });
+
+/** Put the real station's mark next to the channel, so the pairing is visible. */
+async function loadChannelStation(number) {
+  const slot = $('channel-station');
+  slot.innerHTML = '';
+  try {
+    const data = await api(`/api/channels/${number}/network-catalog`);
+    if (data.network) {
+      slot.innerHTML = `<span class="arrow">stands in for</span>${stationArt(data.network)}
+        <span class="muted">${esc(data.network)}</span>`;
+    }
+  } catch { /* a channel with no station is normal */ }
+}
 
 /** What really aired on the station this channel parodies, and what you lack. */
 async function loadNetworkCatalog() {
@@ -1147,6 +1181,7 @@ async function openChannel(number) {
   showChannelPane('mine');
   $('channel-art').src = `${logoUrl(number)}?v=${state.logoVersion}`;
   $('channel-title').textContent = `${data.channel.number} · ${data.channel.name}`;
+  loadChannelStation(number);
   $('channel-sub').textContent =
     `${data.counts.in_library} from your library`
     + (data.counts.needs_review ? ` · ${data.counts.needs_review} need review` : '')
