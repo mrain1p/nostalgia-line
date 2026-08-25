@@ -148,6 +148,7 @@ async function refreshStatus() {
   renderStats(status.stats);
   renderDiagnostics(status.diagnostics);
   renderProvenance(status);
+  renderGuide();
   $('tab-library-count').textContent = status.stats ? status.stats.total : '';
   $('tab-review-count').textContent = status.stats ? status.stats.needs_review : '';
   if (status.defaults) {
@@ -1523,6 +1524,67 @@ $('export-form').addEventListener('submit', async (event) => {
   }
 });
 
+/* ── what to do next ──────────────────────────────────────── */
+const GUIDE_ACTIONS = {
+  settings: () => showTab('settings'),
+  scan: () => $('scan-btn').click(),
+  review: () => showTab('review'),
+  export: () => $('export-btn').click(),
+  import: () => $('channels-file').click(),
+};
+
+let guideCompact = localStorage.getItem('guideCompact') === '1';
+
+async function renderGuide() {
+  let w;
+  try { w = await api('/api/workflow'); } catch { return; }
+  const el = $('guide');
+
+  const steps = w.steps.map((s, i) => `
+    ${i ? '<span class="gstep-arrow">›</span>' : ''}
+    <button class="gstep ${s.state}" data-step="${esc(s.key)}" title="${esc(s.detail || s.blurb)}">
+      <span class="dot">${s.state === 'done' ? '✓' : i + 1}</span>${esc(s.title)}
+    </button>`).join('');
+
+  const now = w.steps.find((s) => s.key === w.current);
+  const body = now && !guideCompact ? `
+    <div class="guide-now">
+      <div class="guide-now-text">
+        <b>Next: ${esc(now.title)}</b>
+        <p>${esc(now.blurb)}</p>
+        ${now.detail ? `<div class="detail">${esc(now.detail)}</div>` : ''}
+      </div>
+      <button class="btn btn-primary" data-guide-go="${esc(now.action)}">${esc(now.action_label)}</button>
+    </div>` : '';
+
+  el.className = `guide${guideCompact ? ' is-compact' : ''}`;
+  el.innerHTML = `
+    <div class="guide-steps">
+      ${steps}
+      <span class="spacer"></span>
+      <button class="guide-dismiss" id="guide-toggle">${guideCompact ? 'Show guidance' : 'Hide guidance'}</button>
+    </div>
+    ${body}`;
+}
+
+$('guide').addEventListener('click', (event) => {
+  if (event.target.closest('#guide-toggle')) {
+    guideCompact = !guideCompact;
+    localStorage.setItem('guideCompact', guideCompact ? '1' : '0');
+    renderGuide();
+    return;
+  }
+  const go = event.target.closest('[data-guide-go]');
+  if (go) { GUIDE_ACTIONS[go.dataset.guideGo]?.(); return; }
+  // Clicking a step takes you where that step happens.
+  const step = event.target.closest('[data-step]');
+  if (step) {
+    const spec = { connect: 'settings', scan: 'library', review: 'review',
+                   export: 'library', apply: 'library' }[step.dataset.step];
+    if (spec) showTab(spec);
+  }
+});
+
 /* ── access ───────────────────────────────────────────────── */
 async function checkAuth() {
   try {
@@ -1577,6 +1639,7 @@ $('auth-clear').addEventListener('click', async () => {
 
 /* ── boot ──────────────────────────────────────────────────── */
 checkAuth();
+renderGuide();
 refreshStatus();
 loadLibrary();
 setReviewMode('grouped');

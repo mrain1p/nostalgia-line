@@ -587,3 +587,34 @@ tbody tr.is-clickable { cursor: pointer; }
 .rev-item-main .t { font-weight: 500; }
 .rev-item-main .s { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); }
 .rev-actions { display: flex; gap: 6px; flex: none; }
+
+/* ── what to do next ──────────────────────────────────────── */
+.guide { background: #0e131a; border-bottom: 1px solid var(--line); padding: 12px 20px; }
+.guide:empty { display: none; }
+.guide-steps { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+.gstep {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--ink-3); white-space: nowrap;
+  padding: 5px 10px; border-radius: 999px; border: 1px solid transparent; background: none;
+  cursor: pointer; font-family: var(--sans);
+}
+.gstep:hover { color: var(--ink); }
+.gstep .dot {
+  width: 18px; height: 18px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; font: 600 10px/1 var(--mono);
+  border: 1px solid var(--line-strong); color: var(--ink-3);
+}
+.gstep.done { color: var(--ink-2); }
+.gstep.done .dot { background: var(--accent-deep); border-color: var(--accent-deep); color: #04231f; }
+.gstep.current { color: var(--accent); border-color: var(--accent-deep); background: var(--accent-glow); }
+.gstep.current .dot { border-color: var(--accent); color: var(--accent); }
+.gstep-arrow { color: var(--line-strong); font-size: 11px; }
+
+.guide-now { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+.guide-now-text { flex: 1; min-width: 260px; }
+.guide-now-text b { display: block; font-size: 13.5px; margin-bottom: 3px; }
+.guide-now-text p { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; max-width: 82ch; }
+.guide-now-text .detail { color: var(--ink-3); font-size: 12px; margin-top: 5px; }
+.guide-dismiss { background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: 11.5px; }
+.guide-dismiss:hover { color: var(--ink); }
+.guide.is-compact .guide-now { display: none; }

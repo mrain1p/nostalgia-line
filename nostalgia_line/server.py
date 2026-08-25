@@ -42,6 +42,7 @@ from .media import SourceError
 from .sources import build_source, missing_credential_message, source_is_configured
 from .stations import CUSTOM_BAND_START, CustomStation, StationBook
 from .store import Store
+from .workflow import build as build_workflow
 from .tmdb import TMDBCache, TMDBClient, TMDBError
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -291,6 +292,25 @@ def _pending_changes() -> dict:
         "held_for_review": skipped,
         "overrides": len(state.store.overrides),
     }
+
+
+@app.get("/api/workflow")
+def workflow() -> dict:
+    """Where the user is in the process, and what to do next."""
+    pending = _pending_changes()
+    diagnostics = state.result.diagnostics() if state.result else {}
+    return build_workflow(
+        configured=state.configured,
+        source_name=state.cfg.source,
+        scanned=state.result is not None,
+        scan_stats=state.result.stats() if state.result else None,
+        held_for_review=pending["held_for_review"],
+        pending_additions=pending["additions"],
+        last_export_at=state.store.last_export.get("at"),
+        baseline_at=(state.store.baseline or {}).get("at"),
+        lineup_rows=len(state.defaults),
+        no_tmdb_id=diagnostics.get("no_tmdb_id", 0),
+    ).to_dict()
 
 
 @app.get("/api/settings")

@@ -59,14 +59,15 @@
   <button id="stale-rescan" class="btn btn-small">Re-scan now</button>
 </div>
 
+<div class="guide" id="guide"></div>
 <div class="provenance" id="provenance"></div>
 
 <nav class="tabs" role="tablist">
   <button class="tab is-active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
   <button class="tab" data-tab="review" role="tab">Review <span class="count" id="tab-review-count"></span></button>
-  <button class="tab" data-tab="networks" role="tab">Networks <span class="count" id="tab-networks-count"></span></button>
-  <button class="tab" data-tab="channels" role="tab">Channels</button>
-  <button class="tab" data-tab="stations" role="tab">Stations</button>
+  <button class="tab" data-tab="networks" role="tab" title="Real TV networks TMDB reports for your titles">Source networks <span class="count" id="tab-networks-count"></span></button>
+  <button class="tab" data-tab="channels" role="tab" title="The NostalgiaTV channels your titles are assigned to">Your channels</button>
+  <button class="tab" data-tab="stations" role="tab" title="Channels you created yourself in NostalgiaTV">Custom stations</button>
   <button class="tab" data-tab="settings" role="tab">Settings</button>
 </nav>
 </div>
@@ -74,6 +75,8 @@
 <main>
   <!-- ── Library ─────────────────────────────────────────────── -->
   <section id="tab-library" class="panel is-active">
+    <p class="lede">Everything in your media library, and where each title is going.
+      The tiles are filters — click one to see exactly what it counts.</p>
     <div class="stats" id="stats"></div>
     <div id="diagnostics"></div>
 
@@ -194,8 +197,10 @@
   <!-- ── Networks ────────────────────────────────────────────── -->
   <section id="tab-networks" class="panel">
     <p class="lede">
-      Where your library actually comes from. Mapping one unmapped network places
-      every title on it at once. Worst-covered first.
+      The real-world networks TMDB reports for your titles — HBO, Netflix, AMC — and
+      which NostalgiaTV channel each one feeds. Mapping an unmapped network places
+      every title on it at once, so this is the fastest way to clear a lot of
+      uncertainty. Worst-covered first.
     </p>
     <div class="stats" id="network-stats"></div>
     <div class="toolbar">
