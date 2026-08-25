@@ -567,3 +567,33 @@ def test_logo_upload_matches_and_reports(client):
 
 def test_logo_upload_with_no_files_is_rejected(client):
     assert client.post("/api/logos").status_code == 422
+
+
+def test_artwork_copied_in_under_its_original_name_is_served(client):
+    """Files dropped straight into /config/logos keep their source filename.
+
+    NostalgiaTV names artwork after the real network, so logo_tnt.png must be
+    served for T.N.Tea. Listing and serving must agree - an earlier revision had
+    two different matchers and disagreed for exactly these channels.
+    """
+    png = b"\x89PNG\r\n\x1a\n" + b"1" * 64
+    logos = client.server_module.state.cfg.path("logos")
+    logos.mkdir(parents=True, exist_ok=True)
+    for name in ("logo_tnt.png", "logo_metv.png", "logo_hbo.png", "logo_seaw.png"):
+        (logos / name).write_bytes(png)
+
+    listing = {row["channel"] for row in client.get("/api/logos").json()["installed"]}
+    assert {1027, 1040, 1068, 1021} <= listing
+
+    for number in (1027, 1040, 1068, 1021):
+        response = client.get(f"/api/channel-logo/{number}")
+        assert response.status_code == 200
+        assert response.content.startswith(b"\x89PNG"), f"channel {number} fell back to a badge"
+
+    client.delete("/api/logos")
+
+
+def test_a_channel_with_no_artwork_still_gets_a_badge(client):
+    response = client.get("/api/channel-logo/1113")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")

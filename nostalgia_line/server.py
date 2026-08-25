@@ -553,15 +553,20 @@ def channel_logo(number: int):
     if channel is None:
         raise HTTPException(status_code=404, detail=f"no channel {number}")
 
-    slug = re.sub(r"[^a-z0-9]+", "", channel.name.lower())
-    directory = state.cfg.path("logos")
-    for stem in (str(number), f"logo_{slug}", slug, channel.app_key, f"logo_{channel.app_key}"):
-        for suffix in (".png", ".webp", ".svg", ".jpg", ".jpeg"):
-            candidate = directory / f"{stem}{suffix}"
-            if candidate.exists():
-                return FileResponse(
-                    candidate, headers={"Cache-Control": "public, max-age=86400"}
-                )
+    # Use the importer's matcher rather than a second, weaker lookup. Artwork
+    # copied straight into /config/logos keeps its original filename, which is
+    # very often the real network - logo_tnt.png for T.N.Tea - and a name-only
+    # match misses those. One matcher, so listing and serving cannot disagree.
+    importer = LogoImporter(
+        state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
+    )
+    filename = importer.installed().get(number)
+    if filename:
+        candidate = state.cfg.path("logos") / filename
+        if candidate.exists():
+            return FileResponse(
+                candidate, headers={"Cache-Control": "public, max-age=86400"}
+            )
 
     return Response(
         content=_logo_placeholder(channel),
