@@ -717,6 +717,33 @@ async function loadLogos() {
 
 $('logo-import-btn').addEventListener('click', () => $('logo-files').click());
 
+$('logo-m3u-btn').addEventListener('click', async () => {
+  const url = $('logo-m3u').value.trim();
+  if (!url) { banner('Paste your NostalgiaTV M3U URL first.', 'err', 3000); return; }
+  const button = $('logo-m3u-btn');
+  button.disabled = true;
+  $('logo-result').innerHTML = '<p class="hint">Fetching playlist and artwork…</p>';
+  try {
+    const r = await api('/api/logos/from-m3u', { method: 'POST', body: JSON.stringify({ url }) });
+    const bits = [`<p class="result-ok">✓ Imported ${r.imported_count} channel logo(s).</p>`];
+    if (r.unmatched_count) {
+      bits.push(`<p class="hint">${r.unmatched_count} entries in the playlist are not
+        NostalgiaTV channels (live TV, etc.) and were ignored.</p>`);
+    }
+    if (r.skipped_count) {
+      bits.push(`<p class="hint">${r.skipped_count} could not be fetched:
+        ${r.skipped.slice(0, 4).map((x) => `${esc(x.file)} (${esc(x.why)})`).join(', ')}</p>`);
+    }
+    state.logoVersion += 1;
+    $('logo-result').innerHTML = bits.join('');
+    loadLogos(); loadChannels();
+  } catch (err) {
+    $('logo-result').innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $('logo-files').addEventListener('change', async (event) => {
   const files = [...event.target.files];
   if (!files.length) return;

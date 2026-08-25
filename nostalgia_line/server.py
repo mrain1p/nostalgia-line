@@ -120,6 +120,10 @@ class BulkOverrideIn(BaseModel):
     mode: str = "replace"  # replace | add
 
 
+class M3UImportIn(BaseModel):
+    url: str
+
+
 class NetworkMapIn(BaseModel):
     network: str
     channel: int
@@ -494,8 +498,11 @@ def clear_posters() -> dict:
 def list_logos() -> dict:
     """What artwork is installed, and which channels are still on a badge."""
     importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
-    installed = importer.installed()
+    all_installed = importer.installed()
     routable = [c for c in state.catalog if c.accepts_content]
+    routable_numbers = {c.number for c in routable}
+    # Count only routable channels, or the three figures do not sum to the total.
+    installed = {n: f for n, f in all_installed.items() if n in routable_numbers}
     return {
         "directory": str(state.cfg.path("logos")),
         "installed": [
@@ -554,6 +561,16 @@ async def import_logos(files: list[UploadFile] = File(...)) -> dict:
 
     if report is None:
         raise HTTPException(status_code=400, detail="no files uploaded")
+    return report.to_dict()
+
+
+@app.post("/api/logos/from-m3u")
+async def import_logos_from_m3u(payload: M3UImportIn) -> dict:
+    """Pull every channel logo from an M3U playlist in one go."""
+    importer = LogoImporter(
+        state.catalog, state.cfg.path("logos"), _network_map_with_overrides()
+    )
+    report = await importer.import_from_m3u(payload.url.strip())
     return report.to_dict()
 
 

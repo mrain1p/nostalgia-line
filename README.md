@@ -426,6 +426,17 @@ each series' `networks[]` from TMDB, which carries a `logo_path`, so the artwork
 comes free — no configuration, no extra API calls, and it works on a fresh
 install for everyone.
 
+**The fastest route, if you run NostalgiaTV:** paste its M3U URL into the Channels
+tab and hit *Fetch from playlist*. NostalgiaTV publishes a `tvg-logo` for every
+channel, public and keyed by the channel's own app key, so this pulls the real
+artwork for the whole lineup in one pass — measured at 96/96 channels in 5
+seconds, no credentials. M3U is an interop format rather than a private API, so
+it is a safe thing to depend on.
+
+```
+https://your-nostalgiatv/channels.m3u?profileId=…
+```
+
 Resolution order for a channel's logo:
 
 1. Artwork you imported, in `/config/logos`

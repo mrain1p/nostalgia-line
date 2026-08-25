@@ -154,3 +154,42 @@ def test_a_missing_poster_returns_nothing_and_caches_nothing(tmp_path, monkeypat
     cache = PosterCache(tmp_path)
     assert asyncio.run(cache.fetch("/gone.jpg", "w92")) is None
     assert cache.stats()["count"] == 0, "a 404 must not leave a zero-byte file behind"
+
+
+# -- cache schema versioning ---------------------------------------------
+
+
+def test_an_entry_from_an_older_schema_is_refetched(tmp_path):
+    """The bug this prevents: a warm cache written before a field existed made
+    the new field silently empty forever, because nothing ever refetched it."""
+    import json
+
+    from nostalgia_line.tmdb import CACHE_SCHEMA, TMDBCache
+
+    (tmp_path / "tmdb_series.json").write_text(
+        json.dumps({"1396": {"tmdb_id": 1396, "name": "Old", "networks": ["AMC"]}})
+    )
+    cache = TMDBCache(tmp_path)
+    assert cache.get("series", 1396) is None, "a pre-schema entry must be a miss"
+    assert cache.stale_count("series") == 1
+
+    cache.put("series", 1396, {"tmdb_id": 1396, "name": "New"})
+    fresh = cache.get("series", 1396)
+    assert fresh is not None
+    assert fresh["_schema"] == CACHE_SCHEMA
+    assert cache.stale_count("series") == 0
+
+
+def test_network_logos_survive_a_cache_round_trip(tmp_path):
+    from nostalgia_line.tmdb import TMDBCache, TMDBSeries
+
+    cache = TMDBCache(tmp_path)
+    series = TMDBSeries(
+        tmdb_id=1396, name="Breaking Bad", networks=["AMC"],
+        network_logos={"AMC": "/pmvRmATOCaDykE6JrVoeYxlFHw3.png"},
+    )
+    cache.put("series", 1396, series.to_dict())
+    cache.flush()
+
+    restored = TMDBSeries.from_dict(TMDBCache(tmp_path).get("series", 1396))
+    assert restored.network_logos == {"AMC": "/pmvRmATOCaDykE6JrVoeYxlFHw3.png"}

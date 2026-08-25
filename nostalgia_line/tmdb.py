@@ -16,6 +16,12 @@ import httpx
 
 API_ROOT = "https://api.themoviedb.org/3"
 
+# Bump when a cached payload gains a field the app now depends on. Entries
+# written by an older version are treated as misses and refetched, rather than
+# silently deserialising with the new field empty - which is exactly how network
+# logos came back blank on an install with a warm cache.
+CACHE_SCHEMA = 2
+
 
 class TMDBError(RuntimeError):
     """TMDB rejected the request or was unreachable."""
@@ -153,11 +159,22 @@ class TMDBCache:
         return self._data[kind]
 
     def get(self, kind: str, tmdb_id: int) -> dict | None:
-        return self._bucket(kind).get(str(tmdb_id))
+        payload = self._bucket(kind).get(str(tmdb_id))
+        if payload is None:
+            return None
+        if payload.get("_schema") != CACHE_SCHEMA:
+            return None
+        return payload
 
     def put(self, kind: str, tmdb_id: int, payload: dict) -> None:
-        self._bucket(kind)[str(tmdb_id)] = payload
+        self._bucket(kind)[str(tmdb_id)] = {**payload, "_schema": CACHE_SCHEMA}
         self._dirty.add(kind)
+
+    def stale_count(self, kind: str) -> int:
+        """How many entries an upgrade will have to refetch."""
+        return sum(
+            1 for p in self._bucket(kind).values() if p.get("_schema") != CACHE_SCHEMA
+        )
 
     def flush(self) -> None:
         for kind in list(self._dirty):

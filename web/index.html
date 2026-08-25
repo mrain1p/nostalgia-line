@@ -225,8 +225,14 @@
         </div>
         <span class="test-badge" id="logo-badge"></span>
       </header>
+      <label class="field">Import from your NostalgiaTV playlist
+        <input type="text" id="logo-m3u" placeholder="https://your-nostalgiatv/channels.m3u?profileId=…">
+        <small>The fastest route: NostalgiaTV's M3U lists a logo for every channel,
+          public and keyed by channel, so this pulls the real artwork in one go.</small>
+      </label>
       <div class="card-foot">
-        <button class="btn" type="button" id="logo-import-btn">Import artwork</button>
+        <button class="btn btn-primary" type="button" id="logo-m3u-btn">Fetch from playlist</button>
+        <button class="btn" type="button" id="logo-import-btn">Upload files</button>
         <button class="btn btn-ghost" type="button" id="logo-clear-btn">Remove all</button>
         <input type="file" id="logo-files" accept="image/*,.zip" multiple hidden>
       </div>

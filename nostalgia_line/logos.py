@@ -7,19 +7,73 @@ number, which is what the serving endpoint looks for first.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
+
 from .channels import ChannelCatalog
 
 IMAGE_SUFFIXES = {".png", ".webp", ".svg", ".jpg", ".jpeg", ".gif"}
+CONTENT_TYPE_SUFFIX = {
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+}
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_FILES = 400
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+# #EXTINF:-1 tvg-chno="101" tvg-name="Dizzy Channel" tvg-logo="https://…/app_dizzy_channel/logo"
+_EXTINF_ATTR = re.compile(r'([a-zA-Z0-9-]+)="([^"]*)"')
+# NostalgiaTV's logo URLs carry the channel's app key: …/api/channels/<key>/logo
+_APP_KEY_IN_URL = re.compile(r"/channels/(app_[a-z0-9_]+|custom_[a-z0-9_]+)/logo")
+
+
+@dataclass
+class M3UChannel:
+    """One #EXTINF line, reduced to what artwork import needs."""
+
+    name: str = ""
+    number: int | None = None
+    logo_url: str = ""
+    app_key: str = ""
+
+
+def parse_m3u(text: str) -> list[M3UChannel]:
+    """Pull channel names, numbers and logo URLs out of an M3U playlist.
+
+    M3U is a stable interop format - unlike a private HTTP API, it is meant to be
+    read by other software - which makes it a safe thing to depend on.
+    """
+    out: list[M3UChannel] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("#EXTINF"):
+            continue
+        attrs = dict(_EXTINF_ATTR.findall(line))
+        logo = attrs.get("tvg-logo", "").strip()
+        name = (attrs.get("tvg-name") or "").strip()
+        if not name and "," in line:
+            name = line.rsplit(",", 1)[1].strip()
+        raw_number = (attrs.get("tvg-chno") or attrs.get("tvg-id") or "").strip()
+        key_match = _APP_KEY_IN_URL.search(logo)
+        out.append(
+            M3UChannel(
+                name=name,
+                number=int(raw_number) if raw_number.isdigit() else None,
+                logo_url=logo,
+                app_key=key_match.group(1) if key_match else "",
+            )
+        )
+    return out
 
 
 def normalize(name: str) -> str:
@@ -82,6 +136,31 @@ class LogoImporter:
                 if key and self.catalog.get(mapped[0]) is not None:
                     index.setdefault(key, mapped[0])
         return index
+
+    def match_channel(self, entry: "M3UChannel") -> int | None:
+        """Resolve an M3U entry to a channel.
+
+        The app key is definitive when present - NostalgiaTV puts it in the logo
+        URL - so it is tried first, ahead of the display name.
+        """
+        if entry.app_key:
+            channel = self.catalog.by_app_key(entry.app_key)
+            if channel is not None:
+                return channel.number
+        if entry.name:
+            by_name = self._index.get(normalize(entry.name))
+            if by_name is not None:
+                return by_name
+        return None
+
+    def store(self, number: int, data: bytes, suffix: str) -> str:
+        """Write artwork for a channel, replacing any earlier format."""
+        suffix = suffix if suffix in IMAGE_SUFFIXES else ".png"
+        for existing in self.dir.glob(f"{number}.*"):
+            existing.unlink(missing_ok=True)
+        target = self.dir / f"{number}{suffix}"
+        target.write_bytes(data)
+        return target.name
 
     def match(self, filename: str) -> int | None:
         """Which channel does this file belong to, if any?"""
@@ -146,6 +225,71 @@ class LogoImporter:
                     report.skipped.append({"file": name, "why": "larger than 4 MB"})
                     continue
                 self.ingest(name, archive.read(info), report)
+        return report
+
+    async def import_from_m3u(self, url: str, concurrency: int = 8) -> ImportReport:
+        """Import artwork straight from an M3U playlist.
+
+        NostalgiaTV publishes one for IPTV clients, with a `tvg-logo` per channel
+        and the channel's app key in the URL. That makes it an exact, public,
+        no-credentials source of the real artwork - and M3U is an interop format
+        rather than a private API, so depending on it is safe.
+        """
+        report = ImportReport()
+        if not url.lower().startswith(("http://", "https://")):
+            report.skipped.append({"file": url, "why": "not an http(s) URL"})
+            return report
+
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                report.skipped.append({"file": url, "why": f"could not fetch: {exc}"})
+                return report
+
+            entries = parse_m3u(response.text)
+            wanted: list[tuple[M3UChannel, int]] = []
+            for entry in entries:
+                number = self.match_channel(entry)
+                if number is None:
+                    report.unmatched.append(entry.name or entry.logo_url)
+                elif entry.logo_url:
+                    wanted.append((entry, number))
+
+            semaphore = asyncio.Semaphore(concurrency)
+            seen: set[int] = set()
+
+            async def grab(entry: M3UChannel, number: int) -> None:
+                if number in seen:
+                    return
+                seen.add(number)
+                async with semaphore:
+                    try:
+                        art = await client.get(entry.logo_url)
+                    except httpx.HTTPError as exc:
+                        report.skipped.append({"file": entry.name, "why": str(exc)[:80]})
+                        return
+                if art.status_code != 200 or not art.content:
+                    report.skipped.append({"file": entry.name, "why": f"HTTP {art.status_code}"})
+                    return
+                if len(art.content) > MAX_FILE_BYTES:
+                    report.skipped.append({"file": entry.name, "why": "larger than 4 MB"})
+                    return
+                suffix = CONTENT_TYPE_SUFFIX.get(
+                    art.headers.get("content-type", "").split(";")[0].strip(), ".png"
+                )
+                stored = self.store(number, art.content, suffix)
+                report.imported.append(
+                    {
+                        "file": entry.name,
+                        "channel": number,
+                        "channel_name": self.catalog.name_of(number),
+                        "stored_as": stored,
+                    }
+                )
+
+            await asyncio.gather(*(grab(e, n) for e, n in wanted[:MAX_FILES]))
         return report
 
     def installed(self) -> dict[int, str]:
