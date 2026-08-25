@@ -806,3 +806,30 @@ def test_network_catalog_says_so_when_no_station_maps_here(client):
 
 def test_network_catalog_404s_for_an_unknown_channel(client):
     assert client.get("/api/channels/4242/network-catalog").status_code == 404
+
+
+def test_the_busiest_mapped_network_is_chosen_not_the_shortest_named(client, monkeypatch):
+    """Cartoon Net maps from both Cartoon Network and YTV. Picking on name length
+    handed it YTV's catalogue and a 1-of-40 match; pick on evidence instead."""
+    state = client.server_module.state
+    state.result.network_ids = {"YTV": 77, "Cartoon Network": 56}
+
+    # Two of the library's titles on 1006 came from Cartoon Network, none from YTV.
+    for uid, network in (("tmdb:show:1", "Cartoon Network"), ("tmdb:show:2", "Cartoon Network")):
+        entry = next(e for e in state.result.entries if e.uid == uid)
+        entry.network = network
+        entry.resolution.assignments[0].channel_number = 1006
+
+    chosen = {}
+
+    async def fake_catalog(self, network_id, pages=2):
+        chosen["id"] = network_id
+        return []
+
+    monkeypatch.setattr(
+        "nostalgia_line.server.TMDBClient.network_catalog", fake_catalog, raising=True
+    )
+    body = client.get("/api/channels/1006/network-catalog").json()
+    assert chosen["id"] == 56, "should follow the evidence, not the shorter name"
+    assert body["network"] == "Cartoon Network"
+    state.result.network_ids = {}

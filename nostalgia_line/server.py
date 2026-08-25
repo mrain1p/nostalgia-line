@@ -805,8 +805,14 @@ async def channel_network_catalog(number: int, pages: int = 2) -> dict:
             ),
         }
 
-    # Prefer the plainest name when several map here (HBO over HBO Max over Max).
-    name, network_id = min(networks, key=lambda pair: len(pair[0]))
+    # Several networks can map to one channel. Pick the one that actually
+    # accounts for the most of your titles here - shortest-name lost badly,
+    # handing Cartoon Net the catalogue of YTV because "YTV" is three letters.
+    weight: dict[str, int] = {}
+    for entry in state.result.entries:
+        if entry.network and number in entry.channels:
+            weight[entry.network] = weight.get(entry.network, 0) + 1
+    name, network_id = max(networks, key=lambda pair: (weight.get(pair[0], 0), -len(pair[0])))
     try:
         cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
         client = TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit)
