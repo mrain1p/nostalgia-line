@@ -26,6 +26,9 @@ class TMDBSeries:
     tmdb_id: int
     name: str = ""
     networks: list[str] = field(default_factory=list)
+    # network name -> TMDB logo path. Free: the /tv payload already carries it,
+    # so channel artwork costs no extra requests.
+    network_logos: dict[str, str] = field(default_factory=dict)
     genres: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     first_air_date: str = ""
@@ -52,6 +55,7 @@ class TMDBSeries:
             "tmdb_id": self.tmdb_id,
             "name": self.name,
             "networks": self.networks,
+            "network_logos": self.network_logos,
             "genres": self.genres,
             "keywords": self.keywords,
             "first_air_date": self.first_air_date,
@@ -242,6 +246,11 @@ class TMDBClient:
             tmdb_id=tmdb_id,
             name=payload.get("name") or "",
             networks=[n.get("name", "") for n in (payload.get("networks") or []) if n.get("name")],
+            network_logos={
+                n["name"]: n["logo_path"]
+                for n in (payload.get("networks") or [])
+                if n.get("name") and n.get("logo_path")
+            },
             genres=[g.get("name", "") for g in (payload.get("genres") or []) if g.get("name")],
             keywords=[k.get("name", "").lower() for k in keyword_rows if k.get("name")],
             first_air_date=payload.get("first_air_date") or "",

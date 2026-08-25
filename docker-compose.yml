@@ -21,6 +21,9 @@ services:
       # Keep this mounted and an image upgrade never touches your data.
       # Quote the whole mapping if your host path contains spaces.
       - "./config:/config"
+      # Optional: point at an existing folder of channel artwork, read-only.
+      # Not required — channel logos come from TMDB automatically.
+      # - "/path/to/your/logos:/logos:ro"
     environment:
       # Run as your host user so /config stays editable from the shell.
       # Find yours with: id -u && id -g

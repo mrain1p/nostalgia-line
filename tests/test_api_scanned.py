@@ -597,3 +597,61 @@ def test_a_channel_with_no_artwork_still_gets_a_badge(client):
     response = client.get("/api/channel-logo/1113")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/svg+xml")
+
+
+# -- automatic artwork from TMDB -----------------------------------------
+
+
+def test_channels_report_where_their_logo_comes_from(client):
+    rows = {c["number"]: c for c in client.get("/api/channels").json()["channels"]}
+    assert rows[1068]["logo_source"] in ("file", "tmdb", "badge")
+
+
+def test_a_harvested_network_logo_is_used_automatically(client):
+    """No files, no config - the scan already knows AMC's logo, so 1025 gets it."""
+    state = client.server_module.state
+    state.result.network_logos = {"AMC": "/pmvRmATOCaDykE6JrVoeYxlFHw3.png"}
+
+    rows = {c["number"]: c for c in client.get("/api/channels").json()["channels"]}
+    assert rows[1025]["logo_source"] == "tmdb", "AMC maps to 1025 A.M.Sea"
+
+    body = client.get("/api/logos").json()
+    assert body["from_tmdb"] >= 1
+    state.result.network_logos = {}
+
+
+def test_supplied_artwork_beats_the_automatic_one(client):
+    state = client.server_module.state
+    state.result.network_logos = {"AMC": "/pmvRmATOCaDykE6JrVoeYxlFHw3.png"}
+    png = b"\x89PNG\r\n\x1a\n" + b"2" * 64
+    logos = state.cfg.path("logos")
+    logos.mkdir(parents=True, exist_ok=True)
+    (logos / "1025.png").write_bytes(png)
+
+    rows = {c["number"]: c for c in client.get("/api/channels").json()["channels"]}
+    assert rows[1025]["logo_source"] == "file"
+    assert client.get("/api/channel-logo/1025").content.startswith(b"\x89PNG")
+
+    client.delete("/api/logos")
+    state.result.network_logos = {}
+
+
+def test_a_network_with_no_logo_still_falls_back_to_a_badge(client):
+    state = client.server_module.state
+    state.result.network_logos = {}
+    response = client.get("/api/channel-logo/1025")
+    assert response.headers["content-type"].startswith("image/svg+xml")
+
+
+def test_a_read_only_mount_is_read(client, tmp_path, monkeypatch):
+    """`- /path/to/logos:/logos:ro` in compose, with nothing copied in."""
+    png = b"\x89PNG\r\n\x1a\n" + b"3" * 64
+    mount = tmp_path / "mounted-logos"
+    mount.mkdir()
+    (mount / "logo_hbo.png").write_bytes(png)
+    monkeypatch.setenv("NOSTALGIA_LOGO_DIRS", str(mount))
+
+    rows = {c["number"]: c for c in client.get("/api/channels").json()["channels"]}
+    assert rows[1068]["logo_source"] == "file"
+    assert client.get("/api/channel-logo/1068").content.startswith(b"\x89PNG")
+    assert str(mount) in client.get("/api/logos").json()["extra_dirs"]

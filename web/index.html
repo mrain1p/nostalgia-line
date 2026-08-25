@@ -218,10 +218,10 @@
       <header class="card-head">
         <div>
           <h3>Channel artwork</h3>
-          <p>Upload images or a zip. Filenames are matched to channels by number, by
-             channel name, or by NostalgiaTV's <code>logo_&lt;name&gt;.png</code> convention —
-             a folder lifted from another install imports as-is. Anything unmatched
-             is reported, never silently dropped.</p>
+          <p>Most channels already show the real network's logo, pulled from TMDB
+             during the scan — nothing to set up. Upload images or a zip to override
+             any of them, or mount a folder read-only at <code>/logos</code>.
+             Filenames match by number, channel name, or the network being parodied.</p>
         </div>
         <span class="test-badge" id="logo-badge"></span>
       </header>
@@ -230,6 +230,7 @@
         <button class="btn btn-ghost" type="button" id="logo-clear-btn">Remove all</button>
         <input type="file" id="logo-files" accept="image/*,.zip" multiple hidden>
       </div>
+      <div id="logo-coverage" class="logo-coverage"></div>
       <div id="logo-result" class="test-result"></div>
     </div>
   </section>

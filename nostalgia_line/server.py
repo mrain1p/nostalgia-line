@@ -448,6 +448,21 @@ def channels() -> dict:
             for c in state.catalog
         ]
     )
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    installed = importer.installed()
+    mounted: dict[int, str] = {}
+    for directory in _extra_logo_dirs():
+        mounted.update(
+            LogoImporter(state.catalog, directory, _network_map_with_overrides()).installed()
+        )
+    for row in rollup:
+        number = row["number"]
+        if number in installed or number in mounted:
+            row["logo_source"] = "file"
+        elif _tmdb_logo_for_channel(number):
+            row["logo_source"] = "tmdb"
+        else:
+            row["logo_source"] = "badge"
     return {"channels": rollup}
 
 
@@ -488,8 +503,16 @@ def list_logos() -> dict:
             for n, f in sorted(installed.items())
         ],
         "installed_count": len(installed),
-        "missing_count": sum(1 for c in routable if c.number not in installed),
+        "from_tmdb": sum(
+            1 for c in routable if c.number not in installed and _tmdb_logo_for_channel(c.number)
+        ),
+        "missing_count": sum(
+            1
+            for c in routable
+            if c.number not in installed and not _tmdb_logo_for_channel(c.number)
+        ),
         "total_channels": len(routable),
+        "extra_dirs": [str(d) for d in _extra_logo_dirs()],
     }
 
 
@@ -541,7 +564,7 @@ def clear_logos() -> dict:
 
 
 @app.get("/api/channel-logo/{number}")
-def channel_logo(number: int):
+async def channel_logo(number: int):
     """A channel's logo.
 
     Looks in /config/logos for a file named after the channel number, or after
@@ -568,11 +591,71 @@ def channel_logo(number: int):
                 candidate, headers={"Cache-Control": "public, max-age=86400"}
             )
 
+    # 2. Artwork from a read-only mount, matched the same way.
+    for directory in _extra_logo_dirs():
+        mounted = LogoImporter(state.catalog, directory, _network_map_with_overrides())
+        name = mounted.installed().get(number)
+        if name and (directory / name).exists():
+            return FileResponse(
+                directory / name, headers={"Cache-Control": "public, max-age=86400"}
+            )
+
+    # 3. The real network's logo from TMDB, cached on disk like a poster.
+    logo_path = _tmdb_logo_for_channel(number)
+    if logo_path:
+        local = await state.posters.fetch(logo_path, "w154")
+        if local is not None:
+            return FileResponse(
+                local,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "public, max-age=604800",
+                    "X-Logo-Source": "tmdb",
+                },
+            )
+
     return Response(
         content=_logo_placeholder(channel),
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+def _extra_logo_dirs() -> list[Path]:
+    """Optional read-only logo mounts, highest priority first.
+
+    Lets a compose file point at an existing artwork folder
+    (``- /path/to/logos:/logos:ro``) without copying anything in.
+    """
+    dirs = []
+    # os.pathsep, not ":" - a literal colon swallows the drive letter on Windows.
+    for raw in (os.getenv("NOSTALGIA_LOGO_DIRS") or "/logos").split(os.pathsep):
+        candidate = Path(raw.strip())
+        if raw.strip() and candidate.is_dir():
+            dirs.append(candidate)
+    return dirs
+
+
+def _tmdb_logo_for_channel(number: int) -> str | None:
+    """The TMDB logo of a real network this channel stands in for.
+
+    Every scan already downloads each series' ``networks[]``, which carries a
+    ``logo_path``, so real artwork is available for most channels without any
+    configuration and without a single extra API call.
+    """
+    if state.result is None or not state.result.network_logos:
+        return None
+    network_map = _network_map_with_overrides()
+    # Prefer the network whose name is closest to the channel's own billing.
+    candidates = []
+    for network, logo_path in state.result.network_logos.items():
+        mapped = network_map.get(network)
+        if mapped and mapped[0] == number:
+            candidates.append((len(network), network, logo_path))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][2]
 
 
 # Deterministic hue per channel so a logo-less lineup still reads as distinct.

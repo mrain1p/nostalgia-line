@@ -110,6 +110,8 @@ class ScanResult:
     started_at: float = 0.0
     finished_at: float = 0.0
     errors: list[str] = field(default_factory=list)
+    # TMDB network name -> logo path, harvested during the scan.
+    network_logos: dict[str, str] = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
@@ -196,6 +198,7 @@ class ScanResult:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "errors": self.errors,
+            "network_logos": self.network_logos,
             "entries": [e.to_state() for e in self.entries],
         }
         tmp = target.with_suffix(target.suffix + ".tmp")
@@ -230,6 +233,7 @@ class ScanResult:
             started_at=float(payload.get("started_at") or 0.0),
             finished_at=float(payload.get("finished_at") or 0.0),
             errors=list(payload.get("errors") or []),
+            network_logos=dict(payload.get("network_logos") or {}),
         )
 
     def review_queue(self) -> list[LibraryEntry]:
@@ -370,6 +374,9 @@ async def run_scan(
         else:
             record = movie_map.get(item.tmdb_id) if item.tmdb_id else None
             resolution = cascade.resolve_movie(base_title, year, record)
+
+        if record is not None:
+            result.network_logos.update(getattr(record, "network_logos", None) or {})
 
         entry = LibraryEntry(
             uid=item.uid,

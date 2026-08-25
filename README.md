@@ -419,6 +419,33 @@ One consequence worth knowing: your media server may hold libraries NostalgiaTV
 doesn't use. Set the per-library opt-in in Settings to match, or you'll route
 content NostalgiaTV can't play.
 
+## Channel artwork
+
+Channels show the real network's logo automatically. Every scan already downloads
+each series' `networks[]` from TMDB, which carries a `logo_path`, so the artwork
+comes free — no configuration, no extra API calls, and it works on a fresh
+install for everyone.
+
+Resolution order for a channel's logo:
+
+1. Artwork you imported, in `/config/logos`
+2. Artwork from a read-only mount, if you added one
+3. The TMDB logo of a real network that maps to the channel
+4. A generated badge — initials and channel number, deterministically coloured
+
+To override with your own art, use **Import artwork** on the Channels tab
+(images or a zip), or mount a folder read-only:
+
+```yaml
+volumes:
+  - "/path/to/your/logos:/logos:ro"
+```
+
+Filenames are matched by channel number (`1068.png`), channel name
+(`H.B.Yo Min.png`), or **the real network being parodied** (`logo_hbo.png`) —
+which is how artwork is usually filed. Unmatched files are reported back rather
+than silently ignored.
+
 ## Branches
 
 | Branch | What it is |

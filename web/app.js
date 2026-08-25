@@ -693,8 +693,26 @@ async function loadLogos() {
   const data = await api('/api/logos').catch(() => null);
   if (!data) return;
   const badge = $('logo-badge');
-  badge.dataset.state = data.installed_count ? 'ok' : 'testing';
-  badge.textContent = `${data.installed_count}/${data.total_channels} channels`;
+  const covered = data.installed_count + (data.from_tmdb || 0);
+  badge.dataset.state = covered ? 'ok' : 'testing';
+  badge.textContent = `${covered}/${data.total_channels} channels`;
+
+  const lines = [];
+  if (data.from_tmdb) {
+    lines.push(`<p class="hint"><strong>${data.from_tmdb}</strong> channels use the real
+      network's logo from TMDB automatically — no setup needed.</p>`);
+  }
+  if (data.installed_count) {
+    lines.push(`<p class="hint"><strong>${data.installed_count}</strong> use artwork you
+      supplied, which always wins over the automatic one.</p>`);
+  }
+  if (data.extra_dirs?.length) {
+    lines.push(`<p class="hint">Also reading: ${data.extra_dirs.map(esc).join(', ')}</p>`);
+  }
+  if (data.missing_count) {
+    lines.push(`<p class="hint">${data.missing_count} fall back to a generated badge.</p>`);
+  }
+  $('logo-coverage').innerHTML = lines.join('');
 }
 
 $('logo-import-btn').addEventListener('click', () => $('logo-files').click());
@@ -760,8 +778,9 @@ function renderChannels(channels) {
         : c.thin ? '<span class="tag tag-thin">thin</span>' : '';
       return `<tr>
         <td class="num">${c.number}</td>
-        <td class="col-art"><img class="art-logo" loading="lazy" decoding="async"
-          alt="" src="${esc(logoUrl(c.number))}?v=${state.logoVersion}"></td>
+        <td class="col-art"><img class="art-logo art-logo-${esc(c.logo_source || 'badge')}"
+          loading="lazy" decoding="async" alt=""
+          src="${esc(logoUrl(c.number))}?v=${state.logoVersion}"></td>
         <td class="title-cell">${esc(c.name)} ${tag}</td>
         <td class="col-cat">${esc(c.category)}${c.accepts_content ? '' : ' · no content'}</td>
         <td class="num">${c.existing}</td>

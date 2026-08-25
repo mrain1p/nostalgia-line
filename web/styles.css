@@ -461,3 +461,9 @@ ul.mini { margin: 6px 0 0; padding-left: 18px; color: var(--ink-3); font-size: 1
 }
 
 .logo-card { margin-top: 16px; }
+
+/* TMDB network marks are usually black on transparent — they need a light tile
+   to be visible at all on a dark UI. User-supplied art is left as authored. */
+.art-logo-tmdb { background: #eef2f7; border-color: #cdd6e0; }
+.logo-coverage { margin-top: 12px; display: grid; gap: 6px; }
+.logo-coverage:empty { display: none; }
