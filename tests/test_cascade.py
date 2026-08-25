@@ -215,19 +215,44 @@ def test_japanese_live_action_is_not_treated_as_anime(cascade):
         2019,
         series(networks=["Unmapped"], genres=["Drama"], original_language="ja", origin_country=["JP"]),
     )
-    assert resolution.primary.channel_number != 1071
+    placed = [a.channel_number for a in resolution.assignments]
+    if resolution.suggestion:
+        placed.append(resolution.suggestion.channel_number)
+    assert 1071 not in placed
 
 
 # -- step 4 and 5: genre fallback and unassigned -------------------------
 
 
-def test_genre_fallback_is_low_confidence_and_always_reviewed(cascade):
+def test_genre_fallback_suggests_but_never_places(cascade):
+    """Measured against a real lineup the genre rule agreed 0/9, in line with
+    the spec's 69% error rate on the low tier (S9). It records what it would
+    have chosen, and places nothing - an unassigned title in the review queue
+    is honest where a wrong placement is not."""
     resolution = cascade.resolve_series(
         "Generic Drama", 2019, series(networks=["Unmapped"], genres=["Drama"])
     )
-    assert resolution.primary.channel_number == 1099
-    assert resolution.primary.confidence == LOW
+    assert resolution.status == STATUS_UNASSIGNED
+    assert resolution.assignments == []
     assert resolution.needs_review
+    assert resolution.suggestion is not None
+    assert resolution.suggestion.channel_number == 1099
+    assert resolution.suggestion.confidence == LOW
+    # The reasoning survives where the user will read it.
+    assert "genre fallback" in resolution.review_reason
+    assert "Spotlight" in resolution.review_reason
+
+
+def test_the_genre_suggestion_round_trips_through_serialisation(cascade):
+    from nostalgia_line.cascade import Resolution
+
+    resolution = cascade.resolve_series(
+        "Generic Drama", 2019, series(networks=["Unmapped"], genres=["Drama"])
+    )
+    reloaded = Resolution.from_dict(resolution.to_dict())
+    assert reloaded.suggestion is not None
+    assert reloaded.suggestion.channel_number == resolution.suggestion.channel_number
+    assert reloaded.status == STATUS_UNASSIGNED
 
 
 def test_nothing_at_all_is_surfaced_not_dropped(cascade):

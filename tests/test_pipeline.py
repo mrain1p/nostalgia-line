@@ -278,3 +278,100 @@ def test_store_survives_a_corrupt_file(tmp_path):
     path.write_text("{not json", encoding="utf-8")
     store = Store(path)
     assert store.overrides == {}
+
+
+# -- delta between scans (HANDOVER item 2) --------------------------------
+
+
+def test_delta_marks_new_changed_and_unchanged(scan, catalog):
+    from nostalgia_line.pipeline import apply_delta
+
+    previous = scan()
+    current = scan()
+
+    # One title moved (simulate a remap by overriding the earlier scan)...
+    moved = next(e for e in previous.entries if e.title == "A Brand New HBO Drama")
+    apply_override(moved, [1044], catalog)
+    # ...and one title vanished from the library since.
+    departed = next(e for e in previous.entries if e.title == "Mystery Meat")
+    previous.entries.remove(departed)
+
+    apply_delta(current, previous)
+    by_title = {e.title: e for e in current.entries}
+    assert by_title["A Brand New HBO Drama"].delta == "changed"
+    assert by_title["Mystery Meat"].delta == "new"
+    assert by_title["A Brand New Netflix Comedy"].delta == "unchanged"
+    assert [d["title"] for d in current.departed] == []
+    assert current.previous_scan_at == previous.finished_at
+
+
+def test_delta_reports_departed_titles(scan):
+    from nostalgia_line.pipeline import apply_delta
+
+    previous = scan()
+    current = scan()
+    current.entries = [e for e in current.entries if e.title != "Mystery Meat"]
+    apply_delta(current, previous)
+    assert [d["title"] for d in current.departed] == ["Mystery Meat"]
+
+
+def test_the_first_scan_claims_no_delta(scan):
+    """806 titles marked 'new' on the first import would be noise, not signal."""
+    from nostalgia_line.pipeline import apply_delta
+
+    result = scan()
+    apply_delta(result, None)
+    assert all(e.delta == "" for e in result.entries)
+    assert result.previous_scan_at == 0.0
+    assert result.stats()["delta"]["tracked"] is False
+
+
+def test_delta_is_keyed_on_uid_alone(scan):
+    """uid survives a re-scan and a Plex->Jellyfin move; nothing else does.
+    A renamed title with the same uid is the same entry, not a new one."""
+    from nostalgia_line.pipeline import apply_delta
+
+    previous = scan()
+    current = scan()
+    renamed = next(e for e in current.entries if e.title == "A Brand New HBO Drama")
+    renamed.title = "An HBO Drama, Renamed"
+    apply_delta(current, previous)
+    assert renamed.delta == "unchanged"
+
+
+def test_the_delta_survives_a_restart(scan, tmp_path):
+    """Spec'd in the handover: restarting the container must not lose the
+    delta. It is persisted with the scan, so loading the scan restores it."""
+    from nostalgia_line.pipeline import apply_delta
+
+    previous = scan()
+    current = scan()
+    current.entries[0].title = "__wholly_new__"
+    current.entries[0].uid = "tmdb:show:99999"
+    apply_delta(current, previous)
+    assert current.entries[0].delta == "new"
+    departed_before = [d["uid"] for d in current.departed]
+
+    path = tmp_path / "scan.json.gz"
+    current.save(path)
+    reloaded = ScanResult.load(path)
+
+    assert reloaded is not None
+    assert reloaded.entries[0].delta == "new"
+    assert reloaded.previous_scan_at == previous.finished_at
+    assert [d["uid"] for d in reloaded.departed] == departed_before
+    assert reloaded.stats()["since_last_scan"] == current.stats()["since_last_scan"]
+
+
+def test_stats_count_the_delta(scan):
+    from nostalgia_line.pipeline import apply_delta
+
+    previous = scan()
+    current = scan()
+    current.entries[0].uid = "tmdb:show:77777"
+    apply_delta(current, previous)
+    stats = current.stats()
+    assert stats["delta"]["tracked"] is True
+    assert stats["delta"]["new"] == 1
+    assert stats["delta"]["departed"] == 1
+    assert stats["since_last_scan"] == stats["delta"]["new"] + stats["delta"]["changed"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import re
@@ -24,7 +25,8 @@ from .auth import (
     password_from_env,
     verify_password,
 )
-from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED
+from .accuracy import MIN_SAMPLES, measure
+from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED, Cascade
 from .channels import (
     ChannelCatalog,
     DefaultAssignments,
@@ -32,16 +34,17 @@ from .channels import (
     load_orphan_networks,
     normalize_title,
 )
-from .config import SOURCES, Config, load_config, save_config
+from .config import ROUTING_MODES, SOURCES, Config, ScheduleConfig, load_config, save_config
 from .export import build_addition_rows, preflight as run_preflight
 from .export import export as run_export
-from .pipeline import ScanResult, apply_override, run_scan
+from .pipeline import ScanResult, apply_delta, apply_override, run_scan
 from .posters import DEFAULT_SIZE, PosterCache
 from .logos import LogoImporter
 from .media import SourceError
 from .sources import build_source, missing_credential_message, source_is_configured
 from .stations import CUSTOM_BAND_START, CustomStation, StationBook
 from .store import Store
+from .workflow import build as build_workflow
 from .tmdb import TMDBCache, TMDBClient, TMDBError
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -66,10 +69,15 @@ class AppState:
         # UI says so rather than pretending it is live.
         self.result: ScanResult | None = ScanResult.load(self.scan_path)
         self.scan_task: asyncio.Task | None = None
+        self.schedule_task: asyncio.Task | None = None
         self.progress: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0}
         self.sessions = Sessions()
         self.last_error: str = ""
         self.last_export: dict | None = None
+        # The accuracy measurement is a few hundred cascade runs, so it is
+        # computed once per (scan, routing inputs) and served from here.
+        self.accuracy: dict | None = None
+        self.accuracy_key: tuple | None = None
         # Set whenever a routing input changes. The displayed scan was produced
         # under the old rules, so it no longer reflects what an export would do.
         self.stale: bool = False
@@ -115,10 +123,37 @@ def _config_path() -> Path:
 
 
 state = AppState(_config_path())
-app = FastAPI(title="Nostalgia Line", version=__version__)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """One background timer for scheduled scans. No scheduler dependency."""
+    state.schedule_task = asyncio.create_task(_schedule_loop())
+    try:
+        yield
+    finally:
+        state.schedule_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.schedule_task
+        if state.scan_task and not state.scan_task.done():
+            state.scan_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await state.scan_task
+
+
+app = FastAPI(title="Nostalgia Line", version=__version__, lifespan=lifespan)
 
 
 # -- models ---------------------------------------------------------------
+
+
+class ScheduleIn(BaseModel):
+    """Replaces the whole schedule section, so the quiet window can be cleared."""
+
+    enabled: bool = False
+    interval_hours: float = 24.0
+    quiet_start: int | None = None
+    quiet_end: int | None = None
 
 
 class SettingsIn(BaseModel):
@@ -136,6 +171,7 @@ class SettingsIn(BaseModel):
     multi_channel: str | None = None
     orphan_network: str | None = None
     include_movies: bool | None = None
+    schedule: ScheduleIn | None = None
 
 
 class OverrideIn(BaseModel):
@@ -278,6 +314,7 @@ def status() -> dict:
         "scan_at": state.result.finished_at if state.result else None,
         "stats": state.result.stats() if state.result else None,
         "diagnostics": state.result.diagnostics() if state.result else None,
+        "schedule": _schedule_info(),
     }
 
 
@@ -291,6 +328,27 @@ def _pending_changes() -> dict:
         "held_for_review": skipped,
         "overrides": len(state.store.overrides),
     }
+
+
+@app.get("/api/workflow")
+def workflow() -> dict:
+    """Where the user is in the process, and what to do next."""
+    pending = _pending_changes()
+    diagnostics = state.result.diagnostics() if state.result else {}
+    stats = state.result.stats() if state.result else None
+    return build_workflow(
+        configured=state.configured,
+        source_name=state.cfg.source,
+        scanned=state.result is not None,
+        scan_stats=stats,
+        held_for_review=pending["held_for_review"],
+        pending_additions=pending["additions"],
+        last_export_at=state.store.last_export.get("at"),
+        baseline_at=(state.store.baseline or {}).get("at"),
+        lineup_rows=len(state.defaults),
+        no_tmdb_id=diagnostics.get("no_tmdb_id", 0),
+        new_since_scan=(stats or {}).get("since_last_scan", 0),
+    ).to_dict()
 
 
 @app.get("/api/settings")
@@ -311,6 +369,12 @@ def get_settings() -> dict:
         "multi_channel": cfg.routing.multi_channel,
         "orphan_network": cfg.routing.orphan_network,
         "include_movies": cfg.routing.include_movies,
+        "schedule": {
+            "enabled": cfg.schedule.enabled,
+            "interval_hours": cfg.schedule.interval_hours,
+            "quiet_start": cfg.schedule.quiet_start,
+            "quiet_end": cfg.schedule.quiet_end,
+        },
         "output": {"additions": cfg.output.additions_only, "merged": cfg.output.merged},
     }
 
@@ -318,6 +382,12 @@ def get_settings() -> dict:
 @app.post("/api/settings")
 def put_settings(payload: SettingsIn) -> dict:
     cfg = state.cfg
+    routing_before = (
+        cfg.routing.mode,
+        cfg.routing.multi_channel,
+        cfg.routing.orphan_network,
+        cfg.routing.include_movies,
+    )
     if payload.source:
         if payload.source not in SOURCES:
             raise HTTPException(status_code=400, detail=f"source must be one of {SOURCES}")
@@ -348,12 +418,33 @@ def put_settings(payload: SettingsIn) -> dict:
         cfg.routing.orphan_network = payload.orphan_network
     if payload.include_movies is not None:
         cfg.routing.include_movies = payload.include_movies
+    if payload.schedule is not None:
+        candidate = ScheduleConfig(
+            enabled=payload.schedule.enabled,
+            interval_hours=payload.schedule.interval_hours,
+            quiet_start=payload.schedule.quiet_start,
+            quiet_end=payload.schedule.quiet_end,
+        )
+        try:
+            candidate.validate()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cfg.schedule = candidate
     try:
         cfg.routing.validate()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     save_config(cfg, state.config_path)
-    state.mark_stale("routing settings changed")
+    routing_after = (
+        cfg.routing.mode,
+        cfg.routing.multi_channel,
+        cfg.routing.orphan_network,
+        cfg.routing.include_movies,
+    )
+    # Only a routing change invalidates the displayed scan. Saving the scan
+    # schedule or a playlist URL changes nothing about where titles route.
+    if routing_after != routing_before:
+        state.mark_stale("routing settings changed")
     return get_settings()
 
 
@@ -395,15 +486,9 @@ async def test_tmdb() -> dict:
 # -- scanning -------------------------------------------------------------
 
 
-@app.post("/api/scan")
-async def scan(include_movies: bool | None = None) -> dict:
-    if state.scan_task and not state.scan_task.done():
-        raise HTTPException(status_code=409, detail="a scan is already running")
-    if not state.configured:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{missing_credential_message(state.cfg)}, and a TMDB key",
-        )
+def _start_scan_task(include_movies: bool | None = None) -> None:
+    """Kick off a scan. Shared by POST /api/scan and the scheduler; callers
+    check the guards (nothing running, credentials configured) first."""
     state.last_error = ""
     state.stale = False
     state.stale_reason = ""
@@ -414,7 +499,8 @@ async def scan(include_movies: bool | None = None) -> dict:
 
     async def worker() -> None:
         try:
-            state.result = await run_scan(
+            previous = state.result
+            result = await run_scan(
                 state.cfg,
                 state.catalog,
                 state.defaults,
@@ -426,6 +512,9 @@ async def scan(include_movies: bool | None = None) -> dict:
                 ),
                 progress=progress,
             )
+            apply_delta(result, previous)
+            state.result = result
+            state.accuracy = None  # measured against the previous scan
             state.progress = {"phase": "done", "done": 1, "total": 1}
             state.persist_result()
             await _refresh_playlist_logos()
@@ -441,7 +530,88 @@ async def scan(include_movies: bool | None = None) -> dict:
             state.progress = {"phase": "error", "done": 0, "total": 0}
 
     state.scan_task = asyncio.create_task(worker())
+
+
+@app.post("/api/scan")
+async def scan(include_movies: bool | None = None) -> dict:
+    if state.scan_task and not state.scan_task.done():
+        raise HTTPException(status_code=409, detail="a scan is already running")
+    if not state.configured:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{missing_credential_message(state.cfg)}, and a TMDB key",
+        )
+    _start_scan_task(include_movies)
     return {"started": True}
+
+
+# -- scheduled scans -------------------------------------------------------
+
+
+def _in_quiet_window(hour: int, start: int | None, end: int | None) -> bool:
+    """Is this local hour inside the configured quiet window? Wraps midnight."""
+    if start is None or end is None or start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def _schedule_decision(now: float, local_hour: int) -> str:
+    """What the scheduler should do this tick - separated so it can be tested.
+
+    Returns "scan" or the reason for not scanning. A due scan deferred by the
+    quiet window runs on the first tick after the window ends.
+    """
+    sched = state.cfg.schedule
+    if not sched.enabled:
+        return "disabled"
+    if not state.configured:
+        return "unconfigured"
+    if state.scan_task and not state.scan_task.done():
+        return "scan_running"
+    last = state.result.finished_at if state.result else 0.0
+    if now - last < float(sched.interval_hours) * 3600:
+        return "not_due"
+    if _in_quiet_window(local_hour, sched.quiet_start, sched.quiet_end):
+        return "quiet"
+    return "scan"
+
+
+async def _schedule_loop() -> None:
+    """Check once a minute whether a scan is due. A failed scan reports through
+    state.last_error like a manual one; the timer itself must never die."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            if _schedule_decision(time.time(), time.localtime().tm_hour) == "scan":
+                _start_scan_task()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - belt and braces
+            state.last_error = f"scheduled scan could not start: {exc}"
+
+
+def _schedule_info() -> dict:
+    """What the status endpoint reports about unattended scanning."""
+    sched = state.cfg.schedule
+    info: dict[str, Any] = {
+        "enabled": sched.enabled,
+        "interval_hours": sched.interval_hours,
+        "quiet_start": sched.quiet_start,
+        "quiet_end": sched.quiet_end,
+        "next_due_at": None,
+        "waiting_on_quiet": False,
+    }
+    if not (sched.enabled and state.configured):
+        return info
+    last = state.result.finished_at if state.result else 0.0
+    due = last + float(sched.interval_hours) * 3600
+    info["next_due_at"] = due
+    info["waiting_on_quiet"] = due <= time.time() and _in_quiet_window(
+        time.localtime().tm_hour, sched.quiet_start, sched.quiet_end
+    )
+    return info
 
 
 @app.post("/api/scan/cancel")
@@ -482,6 +652,7 @@ def library(
     source: str = "",
     item_type: str = "",
     review_only: bool = False,
+    since_last_scan: bool = False,
     sort: str = "title",
     direction: str = "asc",
     offset: int = 0,
@@ -498,6 +669,8 @@ def library(
         entries = [e for e in entries if e.section == section]
     if review_only:
         entries = [e for e in entries if e.resolution.needs_review]
+    if since_last_scan:
+        entries = [e for e in entries if e.delta in ("new", "changed")]
     if channel is not None:
         entries = [e for e in entries if channel in e.channels]
     if network:
@@ -730,6 +903,35 @@ def clear_logos() -> dict:
     return {"removed": importer.clear()}
 
 
+@app.get("/api/station-logo")
+async def station_logo(network: str):
+    """The real station's own logo, from TMDB.
+
+    Harvested during the scan from the same payload that gives us the network
+    name, so it costs nothing extra. Served through the poster cache.
+    """
+    if state.result is None:
+        raise HTTPException(status_code=404, detail="run a scan first")
+    logo_path = state.result.network_logos.get(network)
+    if not logo_path:
+        # Try case-insensitively; TMDB is not always consistent about casing.
+        folded = network.casefold()
+        logo_path = next(
+            (p for n, p in state.result.network_logos.items() if n.casefold() == folded),
+            None,
+        )
+    if not logo_path:
+        raise HTTPException(status_code=404, detail=f"no logo for {network}")
+    local = await state.posters.fetch(logo_path, "w154")
+    if local is None:
+        raise HTTPException(status_code=404, detail="logo unavailable")
+    return FileResponse(
+        local,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
+
+
 @app.get("/api/channel-logo/{number}")
 async def channel_logo(number: int):
     """A channel's logo.
@@ -959,6 +1161,72 @@ def review() -> dict:
         "total": len(queue),
         "items": [e.to_dict(state.catalog) for e in queue],
     }
+
+
+# -- accuracy --------------------------------------------------------------
+
+
+def _accuracy_key() -> tuple:
+    """Everything the measurement depends on. When any of it moves, recompute."""
+    routing = state.cfg.routing
+    return (
+        state.result.finished_at if state.result else 0.0,
+        routing.mode,
+        routing.multi_channel,
+        routing.orphan_network,
+        tuple(sorted(state.store.networks.items())),
+        tuple(sorted(s.number for s in state.stations)),
+    )
+
+
+@app.get("/api/accuracy")
+def accuracy_report() -> dict:
+    """How often the cascade agrees with the lineup's own placements.
+
+    Every show the imported channels.csv already places is free ground truth:
+    probe the cascade for an independent opinion and compare. All three routing
+    modes are measured so they can be compared on this library, not the spec's.
+    Cached per scan - this is a few hundred cascade runs, and a poll must not
+    pay for them again.
+    """
+    if state.result is None:
+        return {"scanned": False}
+    key = _accuracy_key()
+    if state.accuracy is not None and state.accuracy_key == key:
+        return state.accuracy
+
+    cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
+    network_map = _network_map_with_overrides()
+    orphan_map = load_orphan_networks(state.cfg.path(state.cfg.data.orphan_networks))
+    reports = {}
+    for mode in ROUTING_MODES:
+        cascade = Cascade(
+            catalog=state.catalog,
+            defaults=state.defaults,
+            network_map=network_map,
+            orphan_map=orphan_map,
+            stations=state.stations,
+            mode=mode,
+            multi_channel=state.cfg.routing.multi_channel,
+            orphan_policy=state.cfg.routing.orphan_network,
+        )
+        reports[mode] = measure(state.result, cascade, cache)
+
+    active = reports[state.cfg.routing.mode].to_dict()
+    disagreements = active.pop("disagreements")
+    payload = {
+        "scanned": True,
+        "computed_at": time.time(),
+        "scan_at": state.result.finished_at,
+        "min_samples": MIN_SAMPLES,
+        **active,
+        "disagreements": disagreements[:200],
+        "disagreements_total": len(disagreements),
+        "modes": [reports[mode].summary() for mode in ROUTING_MODES],
+    }
+    state.accuracy = payload
+    state.accuracy_key = key
+    return payload
 
 
 @app.post("/api/override")

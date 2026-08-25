@@ -25,6 +25,9 @@ from .conftest import DATA
 
 
 def make_entry(uid, title, network, channels, status=STATUS_LINE, review=False, conf=HIGH):
+    # For an already-assigned entry the channels are the lineup's, not the
+    # cascade's - they live in existing_channels and there are no assignments.
+    already = status == STATUS_APP
     return LibraryEntry(
         uid=uid,
         title=title,
@@ -37,9 +40,12 @@ def make_entry(uid, title, network, channels, status=STATUS_LINE, review=False, 
         network=network,
         resolution=Resolution(
             status=status,
-            assignments=[
-                Assignment(c, f"Ch{c}", "network", conf, "test") for c in channels
-            ],
+            assignments=(
+                []
+                if already
+                else [Assignment(c, f"Ch{c}", "network", conf, "test") for c in channels]
+            ),
+            existing_channels=list(channels) if already else [],
             network=network,
             needs_review=review,
             review_reason="uncertain" if review else "",
@@ -113,6 +119,8 @@ def fresh_scan(client):
     state.store.networks.clear()
     state.stale = False
     state.stale_reason = ""
+    state.accuracy = None
+    state.accuracy_key = None
     yield
 
 
@@ -833,3 +841,235 @@ def test_the_busiest_mapped_network_is_chosen_not_the_shortest_named(client, mon
     assert chosen["id"] == 56, "should follow the evidence, not the shorter name"
     assert body["network"] == "Cartoon Network"
     state.result.network_ids = {}
+
+
+# -- accuracy (HANDOVER item 1) -------------------------------------------
+
+
+def seed_accuracy_fixture(client):
+    """Two lineup-placed shows with cached TMDB records: one the cascade will
+    agree with, one it will not."""
+    from nostalgia_line.tmdb import TMDBCache, TMDBSeries
+
+    state = client.server_module.state
+    cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
+    cache.put("series", 7, TMDBSeries(tmdb_id=7, networks=["HBO"]).to_dict())
+    cache.put("series", 8, TMDBSeries(tmdb_id=8, networks=["HBO"]).to_dict())
+    cache.flush()
+    state.result.entries += [
+        make_entry("tmdb:show:7", "Eta Show", "HBO", [1068], status=STATUS_APP),
+        make_entry("tmdb:show:8", "Theta Show", "HBO", [1044], status=STATUS_APP),
+    ]
+
+
+def test_accuracy_reports_per_rule_agreement_with_sample_counts(client):
+    seed_accuracy_fixture(client)
+    body = client.get("/api/accuracy").json()
+
+    assert body["scanned"] is True
+    # Zeta Show is lineup-placed but has no cached record; Eta and Theta probe.
+    assert body["ground_truth"] == 3
+    assert body["sampled"] == 2
+    assert body["agree"] == 1
+    assert body["skipped"]["no_cached_record"] == 1
+    network = next(r for r in body["by_rule"] if r["rule"] == "network")
+    assert network["agree"] == 1 and network["n"] == 2
+    assert network["sufficient"] is False, "n=2 must not render a verdict"
+    assert body["min_samples"] == 20
+
+    assert body["disagreements_total"] == 1
+    miss = body["disagreements"][0]
+    assert miss["title"] == "Theta Show"
+    assert miss["ours"][0]["number"] == 1068
+    assert miss["theirs"][0]["number"] == 1044
+
+
+def test_accuracy_compares_all_three_routing_modes(client):
+    seed_accuracy_fixture(client)
+    body = client.get("/api/accuracy").json()
+    assert [m["mode"] for m in body["modes"]] == ["streaming_first", "hybrid", "themed"]
+    streaming = body["modes"][0]
+    themed = body["modes"][2]
+    assert streaming["sampled"] == 2
+    assert themed["sampled"] == 0, "themed skips the network step; these records offer nothing else"
+    assert all("disagreements" not in m for m in body["modes"])
+
+
+def test_accuracy_is_cached_per_scan(client):
+    seed_accuracy_fixture(client)
+    first = client.get("/api/accuracy").json()
+    second = client.get("/api/accuracy").json()
+    assert second["computed_at"] == first["computed_at"], "a poll must not recompute"
+
+    # A routing change invalidates the cache.
+    client.post("/api/settings", json={"routing_mode": "hybrid"})
+    third = client.get("/api/accuracy").json()
+    assert third["computed_at"] != first["computed_at"]
+    assert third["mode"] == "hybrid"
+    client.post("/api/settings", json={"routing_mode": "streaming_first"})
+
+
+def test_accuracy_without_a_scan_says_so(client):
+    client.server_module.state.result = None
+    assert client.get("/api/accuracy").json() == {"scanned": False}
+
+
+# -- the delta between scans (HANDOVER item 2) ----------------------------
+
+
+def test_the_library_filters_to_what_the_last_scan_changed(client):
+    state = client.server_module.state
+    by_uid = {e.uid: e for e in state.result.entries}
+    by_uid["tmdb:show:1"].delta = "new"
+    by_uid["tmdb:show:2"].delta = "changed"
+    by_uid["tmdb:show:3"].delta = "unchanged"
+    state.result.previous_scan_at = 123.0
+
+    data = client.get("/api/library", params={"since_last_scan": True}).json()
+    assert {i["uid"] for i in data["items"]} == {"tmdb:show:1", "tmdb:show:2"}
+    assert all(i["delta"] in ("new", "changed") for i in data["items"])
+
+    stats = client.get("/api/status").json()["stats"]
+    assert stats["since_last_scan"] == 2
+    assert stats["delta"] == {
+        "tracked": True, "new": 1, "changed": 1, "departed": 0, "since": 123.0,
+    }
+
+
+def test_the_workflow_names_the_arrivals(client):
+    state = client.server_module.state
+    next(e for e in state.result.entries if e.uid == "tmdb:show:1").delta = "new"
+    state.result.previous_scan_at = 123.0
+    body = client.get("/api/workflow").json()
+    scan_step = next(s for s in body["steps"] if s["key"] == "scan")
+    assert "1 title(s) are new or moved" in scan_step["detail"]
+
+
+def test_a_completed_scan_derives_the_delta_and_persists_it(client, monkeypatch):
+    """The worker owns the diff: previous in-memory scan vs the new one, then
+    the result (delta included) is written to disk so a restart keeps it."""
+    import copy as _copy
+    import time as _time
+
+    server = client.server_module
+    state = server.state
+    previous_finished = state.result.finished_at = 555.0
+
+    arrived = ScanResult(
+        entries=_copy.deepcopy(SCAN), sections=["Shows"], finished_at=999.0
+    )
+    arrived.entries[0].uid = "tmdb:show:41"
+    arrived.entries[0].tmdb_id = 41
+
+    async def fake_run_scan(*args, **kwargs):
+        return arrived
+
+    monkeypatch.setattr(server, "run_scan", fake_run_scan)
+    assert client.post("/api/scan").json()["started"] is True
+    for _ in range(100):
+        if not client.get("/api/status").json()["scanning"]:
+            break
+        _time.sleep(0.05)
+
+    assert state.result is arrived
+    assert state.result.entries[0].delta == "new"
+    assert state.result.previous_scan_at == previous_finished
+    assert [d["uid"] for d in state.result.departed] == ["tmdb:show:1"]
+    assert state.accuracy is None, "accuracy was measured against the previous scan"
+
+    reloaded = ScanResult.load(state.scan_path)
+    assert reloaded is not None
+    assert reloaded.entries[0].delta == "new"
+    assert reloaded.previous_scan_at == previous_finished
+
+
+# -- scheduled scans (HANDOVER item 2) ------------------------------------
+
+
+def test_schedule_settings_round_trip_and_do_not_stale_the_results(client):
+    body = client.post(
+        "/api/settings",
+        json={"schedule": {"enabled": True, "interval_hours": 6, "quiet_start": 23, "quiet_end": 7}},
+    ).json()
+    assert body["schedule"] == {
+        "enabled": True, "interval_hours": 6.0, "quiet_start": 23, "quiet_end": 7,
+    }
+    assert client.get("/api/status").json()["stale"] is False, (
+        "a schedule change routes nothing differently, so nothing is out of date"
+    )
+    client.post("/api/settings", json={"schedule": {}})
+    assert client.get("/api/settings").json()["schedule"]["enabled"] is False
+
+
+def test_schedule_validation_rejects_nonsense_without_saving_it(client):
+    bad = [
+        {"enabled": True, "interval_hours": 0},
+        {"enabled": True, "quiet_start": 5},
+        {"quiet_start": 26, "quiet_end": 2},
+    ]
+    for payload in bad:
+        assert client.post("/api/settings", json={"schedule": payload}).status_code == 400, payload
+    assert client.server_module.state.cfg.schedule.enabled is False
+
+
+def test_status_reports_when_the_next_scan_is_due(client):
+    import time as _time
+
+    state = client.server_module.state
+    client.post("/api/settings", json={"schedule": {"enabled": True, "interval_hours": 6}})
+    state.result.finished_at = _time.time() - 100
+    body = client.get("/api/status").json()["schedule"]
+    assert body["enabled"] is True
+    assert abs(body["next_due_at"] - (state.result.finished_at + 6 * 3600)) < 1
+    assert body["waiting_on_quiet"] is False
+    client.post("/api/settings", json={"schedule": {}})
+
+
+def test_quiet_window_wraps_midnight(client):
+    quiet = client.server_module._in_quiet_window
+    assert quiet(23, 22, 8) and quiet(3, 22, 8) and quiet(22, 22, 8)
+    assert not quiet(12, 22, 8) and not quiet(8, 22, 8)
+    assert quiet(3, 2, 4) and not quiet(5, 2, 4)
+    assert not quiet(3, None, None), "no window configured"
+    assert not quiet(3, 5, 5), "equal bounds disable the window"
+
+
+def test_the_scheduler_decision_ladder(client):
+    """Every reason not to scan, in order - and the one case that scans."""
+    server = client.server_module
+    state = server.state
+    sched = state.cfg.schedule
+    state.result.finished_at = 1_000.0
+
+    sched.enabled = False
+    assert server._schedule_decision(9_000.0, 12) == "disabled"
+
+    sched.enabled = True
+    sched.interval_hours = 1
+    sched.quiet_start = sched.quiet_end = None
+
+    key = state.cfg.tmdb.api_key
+    state.cfg.tmdb.api_key = ""
+    assert server._schedule_decision(9_000.0, 12) == "unconfigured"
+    state.cfg.tmdb.api_key = key
+
+    class Running:
+        def done(self):
+            return False
+
+    state.scan_task = Running()
+    assert server._schedule_decision(9_000.0, 12) == "scan_running"
+    state.scan_task = None
+
+    assert server._schedule_decision(1_000.0 + 1800, 12) == "not_due"
+
+    sched.quiet_start, sched.quiet_end = 22, 8
+    assert server._schedule_decision(9_000.0, 23) == "quiet"
+    assert server._schedule_decision(9_000.0, 12) == "scan"
+
+    # Never scanned at all: due immediately once enabled and configured.
+    state.result = None
+    assert server._schedule_decision(9_000.0, 12) == "scan"
+
+    sched.enabled = False
+    sched.quiet_start = sched.quiet_end = None

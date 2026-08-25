@@ -43,6 +43,9 @@ class LibraryEntry:
     origin_country: list[str] = field(default_factory=list)
     season_count: int = 0
     overridden: bool = False
+    # How this entry compares with the previous scan: "new", "changed",
+    # "unchanged" - or "" when there was no previous scan to compare against.
+    delta: str = ""
 
     @property
     def status(self) -> str:
@@ -74,7 +77,7 @@ class LibraryEntry:
     _STATE_FIELDS = (
         "uid", "title", "year", "type", "section", "episode_count", "season_count",
         "tmdb_id", "overview", "poster_path", "network", "genres", "origin_country",
-        "overridden",
+        "overridden", "delta",
     )
 
     def to_state(self) -> dict:
@@ -94,6 +97,7 @@ class LibraryEntry:
         kwargs["overridden"] = bool(kwargs.get("overridden"))
         kwargs["overview"] = kwargs.get("overview") or ""
         kwargs["poster_path"] = kwargs.get("poster_path") or ""
+        kwargs["delta"] = kwargs.get("delta") or ""
         return cls(resolution=Resolution.from_dict(raw["resolution"]), **kwargs)
 
     def to_dict(self, catalog: ChannelCatalog) -> dict:
@@ -112,6 +116,7 @@ class LibraryEntry:
             "overview": self.overview,
             "poster_path": self.poster_path,
             "overridden": self.overridden,
+            "delta": self.delta,
             "status": self.status,
             "mapping_source": self.mapping_source,
             "channels": [
@@ -131,6 +136,11 @@ class ScanResult:
     # TMDB network name -> logo path, harvested during the scan.
     network_logos: dict[str, str] = field(default_factory=dict)
     network_ids: dict[str, int] = field(default_factory=dict)
+    # Delta against the scan before this one (see apply_delta). Zero means
+    # there was no previous scan, so per-entry delta carries no information.
+    previous_scan_at: float = 0.0
+    # Titles the previous scan had and this one does not: {uid, title, year}.
+    departed: list[dict] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -141,10 +151,15 @@ class ScanResult:
         by_rule: dict[str, int] = {}
         by_confidence: dict[str, int] = {}
         review = 0
+        new = changed = 0
         for entry in self.entries:
             by_status[entry.status] = by_status.get(entry.status, 0) + 1
             if entry.resolution.needs_review:
                 review += 1
+            if entry.delta == "new":
+                new += 1
+            elif entry.delta == "changed":
+                changed += 1
             for assignment in entry.resolution.assignments:
                 by_rule[assignment.rule] = by_rule.get(assignment.rule, 0) + 1
                 by_confidence[assignment.confidence] = by_confidence.get(assignment.confidence, 0) + 1
@@ -162,6 +177,14 @@ class ScanResult:
             "duration_sec": round(self.duration, 1),
             "sections": self.sections,
             "errors": self.errors,
+            "since_last_scan": new + changed,
+            "delta": {
+                "tracked": self.previous_scan_at > 0,
+                "new": new,
+                "changed": changed,
+                "departed": len(self.departed),
+                "since": self.previous_scan_at or None,
+            },
         }
 
     def channel_rollup(self, catalog: ChannelCatalog, defaults: DefaultAssignments) -> list[dict]:
@@ -196,8 +219,10 @@ class ScanResult:
         return rows
 
     # Bumped whenever the on-disk shape changes, so an old cache is discarded
-    # rather than half-loaded.
-    STATE_VERSION = 1
+    # rather than half-loaded. v2: per-entry delta + genre suggestions - a v1
+    # scan also predates the genre rule change, so showing it would present
+    # placements the current rules would not make.
+    STATE_VERSION = 2
 
     def save(self, path) -> None:
         """Persist the scan so a container restart does not force a re-scan.
@@ -219,6 +244,8 @@ class ScanResult:
             "errors": self.errors,
             "network_logos": self.network_logos,
             "network_ids": self.network_ids,
+            "previous_scan_at": self.previous_scan_at,
+            "departed": self.departed,
             "entries": [e.to_state() for e in self.entries],
         }
         tmp = target.with_suffix(target.suffix + ".tmp")
@@ -255,6 +282,8 @@ class ScanResult:
             errors=list(payload.get("errors") or []),
             network_logos=dict(payload.get("network_logos") or {}),
             network_ids={k: int(v) for k, v in (payload.get("network_ids") or {}).items()},
+            previous_scan_at=float(payload.get("previous_scan_at") or 0.0),
+            departed=list(payload.get("departed") or []),
         )
 
     def review_queue(self) -> list[LibraryEntry]:
@@ -342,6 +371,7 @@ class ScanResult:
                         {"number": n, "name": catalog.name_of(n), "titles": c}
                         for n, c in sorted(landing.items(), key=lambda kv: -kv[1])
                     ],
+                    "has_logo": network in self.network_logos,
                     "samples": [e.title for e in group[:6]],
                 }
             )
@@ -462,6 +492,38 @@ async def run_scan(
     return result
 
 
+def apply_delta(current: ScanResult, previous: ScanResult | None) -> None:
+    """Mark every entry new/changed/unchanged against the previous scan.
+
+    Keyed on ``LibraryEntry.uid`` and nothing else: uid is stable across scans
+    and across a Plex-to-Jellyfin move by design - that is why the no-guid
+    fallback is ``local:`` rather than ``plex:``. "Changed" means the
+    resolution moved - a different status or channel set - which is what
+    matters after a station remap.
+
+    With no previous scan there is nothing to compare against, so delta stays
+    "" everywhere rather than declaring an entire first import "new".
+    """
+    if previous is None or not previous.entries:
+        return
+    before = {e.uid: e for e in previous.entries}
+    for entry in current.entries:
+        old = before.get(entry.uid)
+        if old is None:
+            entry.delta = "new"
+        elif (old.status, sorted(old.channels)) != (entry.status, sorted(entry.channels)):
+            entry.delta = "changed"
+        else:
+            entry.delta = "unchanged"
+    still_here = {e.uid for e in current.entries}
+    current.departed = [
+        {"uid": e.uid, "title": e.title, "year": e.year}
+        for e in previous.entries
+        if e.uid not in still_here
+    ]
+    current.previous_scan_at = previous.finished_at
+
+
 def apply_override(entry: LibraryEntry, channels: list[int] | None, catalog: ChannelCatalog) -> None:
     """A human decision replaces whatever the cascade produced (spec S10.3)."""
     if channels is None:
@@ -469,6 +531,7 @@ def apply_override(entry: LibraryEntry, channels: list[int] | None, catalog: Cha
     entry.overridden = True
     entry.resolution.needs_review = False
     entry.resolution.review_reason = ""
+    entry.resolution.suggestion = None
     if not channels:
         entry.resolution.status = STATUS_UNASSIGNED
         entry.resolution.assignments = []

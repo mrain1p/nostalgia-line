@@ -70,6 +70,33 @@ class RoutingConfig:
 
 
 @dataclass
+class ScheduleConfig:
+    """Unattended re-scans, so new titles surface without anyone remembering to look.
+
+    Off by default. Runs on a single asyncio timer inside the app - there is no
+    scheduler dependency to configure.
+    """
+
+    enabled: bool = False
+    interval_hours: float = 24.0
+    # Local hours (0-23) bounding a window in which a due scan is deferred,
+    # e.g. 23 and 7 to keep the NAS quiet overnight. Wraps midnight. Both or
+    # neither; equal values disable the window.
+    quiet_start: int | None = None
+    quiet_end: int | None = None
+
+    def validate(self) -> None:
+        if float(self.interval_hours) < 1:
+            raise ValueError("schedule.interval_hours must be at least 1")
+        for name in ("quiet_start", "quiet_end"):
+            value = getattr(self, name)
+            if value is not None and not 0 <= int(value) <= 23:
+                raise ValueError(f"schedule.{name} must be an hour from 0 to 23")
+        if (self.quiet_start is None) != (self.quiet_end is None):
+            raise ValueError("set both schedule.quiet_start and quiet_end, or neither")
+
+
+@dataclass
 class OutputConfig:
     additions_only: str = "channels_additions.csv"
     merged: str = "channels_merged.csv"
@@ -104,6 +131,7 @@ class Config:
     nostalgiatv: NostalgiaTVConfig = field(default_factory=NostalgiaTVConfig)
     tmdb: TMDBConfig = field(default_factory=TMDBConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     data: DataConfig = field(default_factory=DataConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
@@ -151,6 +179,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         nostalgiatv=NostalgiaTVConfig(**_section(raw, "nostalgiatv")),
         tmdb=TMDBConfig(**_section(raw, "tmdb")),
         routing=RoutingConfig(**_section(raw, "routing")),
+        schedule=ScheduleConfig(**_section(raw, "schedule")),
         output=OutputConfig(**_section(raw, "output")),
         data=DataConfig(**_section(raw, "data")),
         server=ServerConfig(**_section(raw, "server")),
@@ -175,6 +204,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     if cfg.source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}, got {cfg.source!r}")
     cfg.routing.validate()
+    cfg.schedule.validate()
     return cfg
 
 
@@ -187,6 +217,7 @@ def save_config(cfg: Config, path: str | os.PathLike[str]) -> None:
         "nostalgiatv": asdict(cfg.nostalgiatv),
         "tmdb": asdict(cfg.tmdb),
         "routing": asdict(cfg.routing),
+        "schedule": asdict(cfg.schedule),
         "output": asdict(cfg.output),
         "data": asdict(cfg.data),
         "server": asdict(cfg.server),

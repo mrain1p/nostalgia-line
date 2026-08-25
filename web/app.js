@@ -8,6 +8,14 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
 const posterUrl = (path, size = 'w185') =>
   path ? `/api/poster?path=${encodeURIComponent(path)}&size=${size}` : '';
 const logoUrl = (number) => `/api/channel-logo/${number}`;
+const stationLogoUrl = (network) => `/api/station-logo?network=${encodeURIComponent(network)}`;
+
+/** A station's mark, or nothing at all - an empty box is worse than no box. */
+function stationArt(network, hasLogo = true, extra = '') {
+  if (!network || !hasLogo) return '';
+  return `<img class="art-station ${extra}" loading="lazy" decoding="async" alt=""
+    src="${esc(stationLogoUrl(network))}" onerror="this.remove()">`;
+}
 
 /** "12 minutes ago" — provenance is only useful if it reads at a glance. */
 function ago(epochSeconds) {
@@ -18,6 +26,15 @@ function ago(epochSeconds) {
     if (secs >= size) return `${Math.floor(secs / size)}${label} ago`;
   }
   return 'just now';
+}
+
+function until(epochSeconds) {
+  const secs = Math.max(0, epochSeconds - Date.now() / 1000);
+  const steps = [[86400, 'd'], [3600, 'h'], [60, 'm']];
+  for (const [size, label] of steps) {
+    if (secs >= size) return `in ${Math.floor(secs / size)}${label}`;
+  }
+  return 'any minute';
 }
 
 const splitList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean);
@@ -33,6 +50,7 @@ const state = {
   networkFilter: '',
   poll: null,
   lastItems: [],
+  configured: true,
   logoVersion: 0,
 };
 
@@ -131,6 +149,7 @@ async function refreshStatus() {
     }
   }
 
+  state.configured = status.configured;
   if (!status.configured) {
     standingBanner('Set your Plex URL, Plex token and TMDB key on the Settings tab to begin.');
   }
@@ -148,6 +167,7 @@ async function refreshStatus() {
   renderStats(status.stats);
   renderDiagnostics(status.diagnostics);
   renderProvenance(status);
+  renderGuide();
   $('tab-library-count').textContent = status.stats ? status.stats.total : '';
   $('tab-review-count').textContent = status.stats ? status.stats.needs_review : '';
   if (status.defaults) {
@@ -170,7 +190,9 @@ function renderProvenance(status) {
   const sep = '<span class="prov-sep"></span>';
 
   const scanAge = status.scan_at ? ago(status.scan_at) : null;
-  const scanStale = status.scan_at && (Date.now() / 1000 - status.scan_at) > 86400;
+  // A scan is only "old" when nothing is set to refresh it by itself.
+  const scanStale = status.scan_at && (Date.now() / 1000 - status.scan_at) > 86400
+    && !status.schedule?.enabled;
   const parts = [
     `<span class="prov-item ${scanStale ? 'is-dirty' : ''}">Scan <b>${
       scanAge ? esc(scanAge) : 'none'}</b>${scanStale ? ' — may be out of date' : ''}</span>`,
@@ -179,15 +201,42 @@ function renderProvenance(status) {
     `<span class="prov-item ${changed ? 'is-dirty' : ''}">${
       changed ? `<b>${changed}</b> change${changed === 1 ? '' : 's'} pending` : 'No pending changes'}</span>`,
   ];
+  const delta = status.stats?.delta;
+  if (delta?.tracked && (delta.new || delta.changed || delta.departed)) {
+    const bits = [];
+    if (delta.new) bits.push(`<b>${delta.new}</b> new`);
+    if (delta.changed) bits.push(`<b>${delta.changed}</b> moved`);
+    if (delta.departed) bits.push(`<b>${delta.departed}</b> gone`);
+    parts.push(`<span class="prov-item is-clickable" id="prov-delta"
+      title="Compared with the scan before this one — click to see them">${bits.join(', ')} since last scan</span>`);
+  }
   if (pending.held_for_review) {
     parts.push(`<span class="prov-item">${pending.held_for_review} held for review</span>`);
   }
   parts.push(`<span class="prov-item">Last export <b>${esc(ago(status.last_export_at))}</b></span>`);
+  if (status.schedule?.enabled) {
+    const due = status.schedule.next_due_at;
+    const when = status.scanning ? 'scanning now'
+      : status.schedule.waiting_on_quiet ? 'waiting for quiet hours to end'
+      : due && due > Date.now() / 1000 ? esc(until(due))
+      : 'due any minute';
+    parts.push(`<span class="prov-item" title="Scheduled scans are on — every ${
+      esc(status.schedule.interval_hours)}h">Auto-scan <b>${when}</b></span>`);
+  }
   if (status.posters?.count) {
     parts.push(`<span class="prov-item">${status.posters.count} posters cached</span>`);
   }
   el.innerHTML = parts.join(sep);
 }
+
+$('provenance').addEventListener('click', (event) => {
+  if (!event.target.closest('#prov-delta')) return;
+  $('since-filter').checked = true;
+  state.offset = 0;
+  showTab('library');
+  loadLibrary();
+  refreshStatus();
+});
 
 /* Each tile is also the filter for what it counts - the number you are looking
    at is usually the set you want to work on next. */
@@ -197,13 +246,14 @@ const STAT_TILES = [
   { label: 'Placed by Line', key: 'assigned_by_line', cls: 'good', filter: { status: 'assigned' } },
   { label: 'Unassigned', key: 'unassigned', cls: 'bad', filter: { status: 'unassigned' } },
   { label: 'Needs review', key: 'needs_review', cls: 'warn', filter: { review: true } },
+  { label: 'New since scan', key: 'since_last_scan', cls: 'good', filter: { since: true } },
   { label: 'Coverage', key: 'coverage_pct', cls: '', suffix: '%' },
 ];
 
 function activeTileIndex() {
   const status = $('status-filter').value;
-  const review = $('review-filter').checked;
-  if (review) return 4;
+  if ($('since-filter').checked) return STAT_TILES.findIndex((t) => t.filter?.since);
+  if ($('review-filter').checked) return STAT_TILES.findIndex((t) => t.filter?.review);
   return STAT_TILES.findIndex((t, i) => i > 0 && t.filter && t.filter.status === status && status);
 }
 
@@ -231,6 +281,7 @@ $('stats').addEventListener('click', (event) => {
   const alreadyOn = tile.classList.contains('is-on');
   $('status-filter').value = alreadyOn ? '' : (spec.filter.status || '');
   $('review-filter').checked = alreadyOn ? false : Boolean(spec.filter.review);
+  $('since-filter').checked = alreadyOn ? false : Boolean(spec.filter.since);
   state.offset = 0;
   showTab('library');
   loadLibrary();
@@ -274,6 +325,97 @@ $('cancel-btn').addEventListener('click', async () => {
 
 $('stale-rescan').addEventListener('click', () => $('scan-btn').click());
 
+/* ── empty states ─────────────────────────────────────────── */
+const ICON_SCAN = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4" stroke-linecap="round"/></svg>`;
+const ICON_PLUG = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 3v6M15 3v6M6 9h12v3a6 6 0 0 1-12 0V9ZM12 18v3" stroke-linecap="round"/></svg>`;
+const ICON_DONE = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m4 12.5 5 5L20 6.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+function emptyState(el, { icon, title, body, actions = [], note = '' }) {
+  el.innerHTML = `
+    <div class="icon">${icon}</div>
+    <h3>${esc(title)}</h3>
+    ${body.map((b) => `<p>${b}</p>`).join('')}
+    ${actions.length ? `<div class="actions">${actions.map((a) =>
+      `<button class="btn ${a.primary ? 'btn-primary' : ''}" data-empty-go="${esc(a.go)}">${esc(a.label)}</button>`
+    ).join('')}</div>` : ''}
+    ${note ? `<div class="note">${note}</div>` : ''}`;
+}
+
+/** What the Library shows before there is anything to show. */
+function renderLibraryEmpty(scanned, filtered, configured) {
+  const el = $('library-empty');
+  if (!configured) {
+    emptyState(el, {
+      icon: ICON_PLUG,
+      title: 'Connect a media server first',
+      body: [
+        'Nostalgia Line needs to read your library from Plex or Jellyfin, and needs a '
+        + 'TMDB key to find out which network each show aired on — no media server stores that.',
+      ],
+      actions: [{ go: 'settings', label: 'Open settings', primary: true }],
+    });
+  } else if (!scanned) {
+    emptyState(el, {
+      icon: ICON_SCAN,
+      title: 'Scan your library to begin',
+      body: [
+        'A scan reads every show, looks each one up on TMDB, and works out which '
+        + 'NostalgiaTV channel it belongs on.',
+        '<strong>Nothing is changed anywhere.</strong> Your media server is only read from, '
+        + 'and your channel lineup is untouched until you export and choose to import it.',
+      ],
+      actions: [{ go: 'scan', label: 'Scan library', primary: true }],
+      note: 'A first scan of roughly 800 shows takes about 20 seconds. Later scans are faster.',
+    });
+  } else if (filtered) {
+    emptyState(el, {
+      icon: ICON_SCAN,
+      title: 'No titles match these filters',
+      body: ['Nothing in your library fits the current combination.'],
+      actions: [{ go: 'clear', label: 'Clear all filters' }],
+    });
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const go = event.target.closest('[data-empty-go]');
+  if (!go) return;
+  ({
+    settings: () => showTab('settings'),
+    scan: () => $('scan-btn').click(),
+    clear: () => $('clear-filters').click(),
+    networks: () => showTab('networks'),
+  })[go.dataset.emptyGo]?.();
+});
+
+/* ── filters ──────────────────────────────────────────────── */
+const HIDDEN_FILTERS = ['confidence-filter', 'type-filter', 'source-filter', 'section-filter'];
+
+function activeFilterCount() {
+  let n = HIDDEN_FILTERS.filter((id) => $(id).value).length;
+  if ($('q').value.trim()) n += 1;
+  if ($('status-filter').value) n += 1;
+  if ($('review-filter').checked) n += 1;
+  if ($('since-filter').checked) n += 1;
+  if (state.networkFilter) n += 1;
+  return n;
+}
+
+function syncFilterChrome() {
+  const hidden = HIDDEN_FILTERS.filter((id) => $(id).value).length
+    + ($('since-filter').checked ? 1 : 0);
+  $('more-count').textContent = hidden || '';
+  $('clear-filters').classList.toggle('is-hidden', activeFilterCount() === 0);
+}
+
+$('more-filters').addEventListener('click', () => {
+  const panel = $('filters-more');
+  const open = panel.classList.toggle('is-hidden');
+  $('more-filters').setAttribute('aria-expanded', String(!open));
+});
+
 /* ── library ───────────────────────────────────────────────── */
 function libraryParams(extra = {}) {
   const params = new URLSearchParams({
@@ -288,6 +430,7 @@ function libraryParams(extra = {}) {
   if ($('type-filter').value) params.set('item_type', $('type-filter').value);
   if ($('section-filter').value) params.set('section', $('section-filter').value);
   if ($('review-filter').checked) params.set('review_only', 'true');
+  if ($('since-filter').checked) params.set('since_last_scan', 'true');
   if (state.networkFilter) params.set('network', state.networkFilter);
   return params;
 }
@@ -302,18 +445,14 @@ async function loadLibrary() {
   state.lastItems = data.items;
   const body = $('library-body');
 
-  if (!data.scanned) {
+  if (!data.scanned || !data.items.length) {
     body.innerHTML = '';
-    $('library-empty').textContent = 'Run a scan to populate the library.';
-    $('library-empty').classList.remove('is-hidden');
-  } else if (!data.items.length) {
-    body.innerHTML = '';
-    $('library-empty').textContent = 'No titles match these filters.';
-    $('library-empty').classList.remove('is-hidden');
+    renderLibraryEmpty(data.scanned, data.scanned && activeFilterCount() > 0, state.configured);
   } else {
-    $('library-empty').classList.add('is-hidden');
+    $('library-empty').innerHTML = '';
     body.innerHTML = data.items.map(rowHtml).join('');
   }
+  syncFilterChrome();
 
   const sectionSelect = $('section-filter');
   if (data.sections?.length && sectionSelect.options.length <= 1) {
@@ -375,6 +514,11 @@ function rowHtml(item) {
     || (item.mapping_source === 'lineup' ? 'already in your channels.csv' : '');
   const flag = item.needs_review ? `<span class="flag" title="${esc(item.review_reason)}">⚑</span>` : '';
   const over = item.overridden ? '<span class="overridden" title="assigned by hand">✎</span>' : '';
+  const delta = item.delta === 'new'
+    ? '<span class="delta delta-new" title="Not in the previous scan">new</span>'
+    : item.delta === 'changed'
+      ? '<span class="delta delta-changed" title="Routed differently than in the previous scan">moved</span>'
+      : '';
   const checked = state.selected.has(item.uid) ? 'checked' : '';
   const net = item.network
     ? `<button class="btn-link" data-network="${esc(item.network)}">${esc(item.network)}</button>`
@@ -382,7 +526,7 @@ function rowHtml(item) {
   return `<tr class="is-clickable ${checked ? 'is-selected' : ''}" data-detail="${esc(item.uid)}">
     <td class="col-tick"><input type="checkbox" class="box" data-uid="${esc(item.uid)}" ${checked}></td>
     <td class="col-art">${artCell(item)}</td>
-    <td class="title-cell">${esc(item.title)}${flag}${over}</td>
+    <td class="title-cell">${esc(item.title)}${delta}${flag}${over}</td>
     <td class="num col-year">${item.year ?? ''}</td>
     <td class="num col-sn">${item.type === 'movie' ? '<span class="muted">film</span>' : (item.season_count || '')}</td>
     <td class="num col-eps">${item.type === 'movie' ? '' : (item.episode_count || '')}</td>
@@ -411,8 +555,8 @@ $('q').addEventListener('input', () => {
   searchTimer = setTimeout(() => { state.offset = 0; loadLibrary(); }, 220);
 });
 $('show-posters').addEventListener('change', loadLibrary);
-['status-filter', 'section-filter', 'review-filter', 'confidence-filter', 'source-filter',
- 'type-filter'].forEach((id) => {
+['status-filter', 'section-filter', 'review-filter', 'since-filter', 'confidence-filter',
+ 'source-filter', 'type-filter'].forEach((id) => {
   $(id).addEventListener('change', () => { state.offset = 0; loadLibrary(); });
 });
 $('clear-filters').addEventListener('click', () => {
@@ -420,6 +564,7 @@ $('clear-filters').addEventListener('click', () => {
   ['status-filter', 'section-filter', 'confidence-filter', 'source-filter', 'type-filter']
     .forEach((id) => { $(id).value = ''; });
   $('review-filter').checked = false;
+  $('since-filter').checked = false;
   state.networkFilter = '';
   state.offset = 0;
   loadLibrary();
@@ -505,6 +650,11 @@ let assignMode = 'replace';
 let assignSelection = new Set();
 
 document.addEventListener('click', (event) => {
+  const suggest = event.target.closest('[data-suggest]');
+  if (suggest) {
+    acceptSuggestion(suggest.dataset.suggest, Number(suggest.dataset.suggestCh));
+    return;
+  }
   const detailTrigger = event.target.closest('[data-detail]');
   if (detailTrigger && !event.target.closest('input, .chip')) {
     openDetail(detailTrigger.dataset.detail);
@@ -520,6 +670,19 @@ document.addEventListener('click', (event) => {
     loadLibrary();
   }
 });
+
+/** Apply a recorded suggestion (e.g. the genre rule's) as a deliberate,
+ *  human-approved override - the one thing the rule is not allowed to do
+ *  by itself. */
+async function acceptSuggestion(uid, channel) {
+  try {
+    const item = await api('/api/override', {
+      method: 'POST', body: JSON.stringify({ uid, channels: [channel] }),
+    });
+    banner(`${item.title} placed on ${item.channels[0].number} ${item.channels[0].name}.`, 'ok', 3000);
+    loadReview(); loadLibrary(); refreshStatus();
+  } catch (err) { banner(err.message, 'err'); }
+}
 
 async function ensureChannels() {
   if (!state.channels.length) {
@@ -618,7 +781,7 @@ function groupReview(items) {
     } else if (/genre fallback/i.test(reason)) {
       key = 'genre';
       kind = 'genre';
-      label = 'Placed by genre alone';
+      label = 'Genre suggestion only';
     } else if (/no TMDB record/i.test(reason)) {
       key = 'notmdb';
       kind = 'notmdb';
@@ -636,19 +799,23 @@ function groupReview(items) {
 
 const GROUP_BLURB = {
   network: 'These share one network. Map it once and every title moves together.',
-  genre: 'Nothing but the genre placed these, which is the least reliable rule. Worth a look.',
+  genre: 'Only a genre matched these, and genre alone guesses wrong too often to place '
+    + 'anything - so they stay unassigned. Each keeps its suggestion: apply it, pick a '
+    + 'channel yourself, or leave it be.',
   notmdb: 'Plex never matched these to TMDB, so nothing can route them. Fix the match in Plex, then re-scan.',
   other: '',
 };
 
 function renderReviewGroups(items) {
   const groups = groupReview(items);
+  const biggest = groups.length ? groups[0].items.length : 0;
   const channelOptions = state.channels
     .map((c) => `<option value="${c.number}">${c.number} ${esc(c.name)}</option>`).join('');
 
   $('review-groups').innerHTML = groups.map((g) => `
     <div class="rev-group" data-group="${esc(g.key)}">
       <div class="rev-head" data-toggle="${esc(g.key)}">
+        ${g.kind === 'network' ? stationArt(g.network) : ''}
         <div style="flex:1;min-width:0">
           <h4>${esc(g.label)}</h4>
           <div class="sub">${esc(GROUP_BLURB[g.kind] || '')}</div>
@@ -661,10 +828,11 @@ function renderReviewGroups(items) {
         <button class="btn btn-small btn-primary" data-map-go="${esc(g.network)}">Map network</button>
         <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
       </div>` : `<div class="rev-fix">
-        <button class="btn btn-small" data-accept-group="${esc(g.key)}">Accept all ${g.items.length}</button>
+        <button class="btn btn-small" data-accept-group="${esc(g.key)}">${
+          g.kind === 'genre' ? `Leave all ${g.items.length} unassigned` : `Accept all ${g.items.length}`}</button>
         <button class="btn btn-small" data-assign-group="${esc(g.key)}">Assign all to…</button>
       </div>`}
-      <div class="rev-body is-hidden" data-body="${esc(g.key)}">
+      <div class="rev-body ${g.items.length === biggest ? '' : 'is-hidden'}" data-body="${esc(g.key)}">
         ${g.items.map((i) => `
           <div class="rev-item">
             ${i.poster_path
@@ -676,9 +844,13 @@ function renderReviewGroups(items) {
                 (i.channels[0] && `${i.channels[0].number} ${i.channels[0].name}`) || 'unplaced'}</div>
             </div>
             <div class="rev-actions">
+              ${i.suggestion ? `<button class="btn btn-small btn-primary" data-suggest="${esc(i.uid)}"
+                data-suggest-ch="${i.suggestion.channel_number}"
+                title="${esc(i.suggestion.reason)}">Place on ${esc(i.suggestion.channel_name)}</button>` : ''}
               <button class="btn btn-small" data-detail="${esc(i.uid)}">Details</button>
               <button class="btn btn-small" data-assign="${esc(i.uid)}">Assign</button>
-              <button class="btn btn-small btn-ghost" data-dismiss="${esc(i.uid)}">Accept</button>
+              <button class="btn btn-small btn-ghost" data-dismiss="${esc(i.uid)}">${
+                i.status === 'unassigned' ? 'Leave as is' : 'Accept'}</button>
             </div>
           </div>`).join('')}
       </div>
@@ -694,6 +866,13 @@ $('review-groups').addEventListener('click', async (event) => {
   if (toggle) {
     const body = document.querySelector(`[data-body="${CSS.escape(toggle.dataset.toggle)}"]`);
     body.classList.toggle('is-hidden');
+    return;
+  }
+
+  const dismiss = event.target.closest('[data-dismiss]');
+  if (dismiss) {
+    await api(`/api/dismiss/${encodeURIComponent(dismiss.dataset.dismiss)}`, { method: 'POST' });
+    loadReview(); refreshStatus();
     return;
   }
 
@@ -756,7 +935,15 @@ async function loadReview() {
   reviewItems = data.items;
   renderReviewGroups(data.items);
   const list = $('review-list');
-  $('review-empty').classList.toggle('is-hidden', data.total > 0);
+  if (!data.total) {
+    emptyState($('review-empty'), {
+      icon: ICON_DONE,
+      title: 'Nothing to review',
+      body: ['Every placement is either confident enough to export, or you have already looked at it.'],
+    });
+  } else {
+    $('review-empty').innerHTML = '';
+  }
   list.innerHTML = data.items.map((item) => `
     <div class="card review">
       ${item.poster_path
@@ -770,8 +957,12 @@ async function loadReview() {
       ${item.overview ? `<div class="review-overview">${esc(item.overview)}</div>` : ''}
       <div>${channelChips(item)}</div>
       <div class="card-actions">
+        ${item.suggestion ? `<button class="btn btn-small btn-primary" data-suggest="${esc(item.uid)}"
+           data-suggest-ch="${item.suggestion.channel_number}" title="${esc(item.suggestion.reason)}">
+           Place on ${item.suggestion.channel_number} ${esc(item.suggestion.channel_name)}</button>` : ''}
         <button class="btn btn-small" data-assign="${esc(item.uid)}">Assign</button>
-        <button class="btn btn-small" data-dismiss="${esc(item.uid)}">Looks right</button>
+        <button class="btn btn-small" data-dismiss="${esc(item.uid)}">${
+          item.status === 'unassigned' ? 'Leave as is' : 'Looks right'}</button>
         ${item.network ? `<button class="btn btn-small" data-network="${esc(item.network)}">All from ${esc(item.network)}</button>` : ''}
         ${item.tmdb_id ? `<a class="btn btn-small" target="_blank" rel="noopener"
            href="https://www.themoviedb.org/tv/${item.tmdb_id}">TMDB ↗</a>` : ''}
@@ -796,7 +987,17 @@ async function loadNetworks() {
   if (!data) return;
   networkRows = data.networks;
   $('tab-networks-count').textContent = data.total || '';
-  $('network-empty').classList.toggle('is-hidden', data.scanned && data.total > 0);
+  if (!data.scanned) {
+    emptyState($('network-empty'), {
+      icon: ICON_SCAN,
+      title: 'Scan first',
+      body: ['This page lists the real-world stations your titles came from, which only '
+             + 'becomes known once a scan has looked them up on TMDB.'],
+      actions: [{ go: 'scan', label: 'Scan library', primary: true }],
+    });
+  } else {
+    $('network-empty').innerHTML = '';
+  }
 
   if (data.scanned) {
     const unmapped = data.networks.filter((n) => n.status === 'unmapped').length;
@@ -809,6 +1010,7 @@ async function loadNetworks() {
     ].map(([l, v, c]) => `<div class="stat ${c}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
   }
   renderNetworks();
+  loadAccuracy(); // deliberately not awaited - a few hundred cascade runs on first call
 }
 
 function renderNetworks() {
@@ -824,9 +1026,13 @@ function renderNetworks() {
     const shown = n.landing.slice(0, 3);
     const rest = n.landing.length - shown.length;
     const landing = n.landing.length
-      ? shown.map((l) => `<span class="chip" title="${l.titles} title(s)">${l.number} ${esc(l.name)}</span>`).join('')
-        + (rest > 0 ? `<span class="muted" title="${n.landing.map((l) => `${l.number} ${l.name} (${l.titles})`).join(', ')}">+${rest} more</span>` : '')
-      : '<span class="muted">nowhere</span>';
+      ? `<div class="pairing">
+          <img class="art-logo art-logo-file sm" loading="lazy" alt=""
+            src="${esc(logoUrl(n.landing[0].number))}?v=${state.logoVersion}">
+          <div>${shown.map((l) => `<span class="chip" title="${l.titles} title(s)">${l.number} ${esc(l.name)}</span>`).join('')}
+          ${rest > 0 ? `<span class="muted" title="${n.landing.map((l) => `${l.number} ${l.name} (${l.titles})`).join(', ')}">+${rest} more</span>` : ''}</div>
+        </div>`
+      : '<span class="pairing-none">not routed anywhere yet</span>';
     const scattered = n.landing.length >= 4 && n.status !== 'mapped'
       ? `<span class="scatter" title="These titles landed on ${n.landing.length} different channels because nothing maps this network">scattered across ${n.landing.length}</span>`
       : '';
@@ -835,8 +1041,13 @@ function renderNetworks() {
       .join('');
     return `<tr>
       <td class="title-cell">
-        <button class="btn-link" data-network="${esc(n.network)}">${esc(n.network)}</button>
-        <div class="samples">${n.samples.map(esc).join(' · ')}</div>
+        <div class="station-cell">
+          ${stationArt(n.network, n.has_logo)}
+          <div class="names">
+            <button class="btn-link" data-network="${esc(n.network)}">${esc(n.network)}</button>
+            <div class="samples">${n.samples.map(esc).join(' · ')}</div>
+          </div>
+        </div>
       </td>
       <td class="num">${n.titles}</td>
       <td class="num">${n.episodes}</td>
@@ -880,6 +1091,118 @@ function renderNetworks() {
   $(id).addEventListener('input', renderNetworks);
   $(id).addEventListener('change', renderNetworks);
 });
+
+/* ── routing accuracy ─────────────────────────────────────── */
+const MODE_LABEL = {
+  streaming_first: 'Streaming-first',
+  hybrid: 'Hybrid',
+  themed: 'Themed',
+};
+
+async function loadAccuracy() {
+  const el = $('accuracy-body');
+  let data;
+  try { data = await api('/api/accuracy'); } catch (err) {
+    el.innerHTML = `<p class="hint">Could not measure accuracy: ${esc(err.message)}</p>`;
+    return;
+  }
+  if (!data.scanned) {
+    el.innerHTML = '<p class="hint">Run a scan first — the measurement compares the routing '
+      + 'against the lineup titles a scan finds in your library.</p>';
+    return;
+  }
+  renderAccuracy(data);
+}
+
+function renderAccuracy(data) {
+  const el = $('accuracy-body');
+
+  if (!data.sampled && !(data.suggestions && data.suggestions.n)) {
+    el.innerHTML = `<p class="hint">Nothing to measure yet: of ${data.ground_truth} lineup-placed
+      show(s), none could be probed — ${data.skipped.no_cached_record} missing from the TMDB
+      cache, ${data.skipped.no_tmdb_id} without a TMDB id. A fresh scan fills the cache.</p>`;
+    return;
+  }
+
+  const overallCls = !data.sufficient ? ''
+    : data.pct >= 85 ? 'good' : data.pct >= 60 ? 'warn' : 'bad';
+  const modes = data.modes.map((m) => `
+    <div class="stat ${m.mode === data.mode ? 'is-on' : ''}">
+      <b>${m.sufficient ? `${m.pct}%` : `${m.agree}/${m.sampled}`}</b>
+      <span>${esc(MODE_LABEL[m.mode] || m.mode)}${m.mode === data.mode ? ' · current' : ''} — n=${m.sampled}</span>
+    </div>`).join('');
+
+  const rules = data.by_rule.map((r) => `
+    <tr>
+      <td>${esc(r.rule.replace(/_/g, ' '))}</td>
+      <td class="num">${r.agree}/${r.n}</td>
+      <td class="num">${r.sufficient ? `${r.pct}%` : '<span class="muted">too few to judge</span>'}</td>
+      <td class="col-meter">${r.sufficient
+        ? `<div class="bar"><span class="${r.pct < 60 ? 'hot' : ''}" style="width:${r.pct}%"></span></div>` : ''}</td>
+    </tr>`).join('');
+
+  const s = data.suggestions || {};
+  const suggestions = s.n ? `<p class="hint">The genre rule no longer places anything — it only
+    suggests. Its suggestions would have matched the lineup ${s.agree}/${s.n} time(s)${
+      s.sufficient ? ` (${s.pct}%)` : ' — too few to judge'}. Films route mostly on genre,
+    which is why they stay off until this number earns trust.</p>` : '';
+
+  const shown = data.disagreements.slice(0, 10);
+  const disagreements = shown.length ? `
+    <h4>Where they disagree</h4>
+    <p class="hint">Each is either a routing bug or a debatable lineup call. Click one to inspect.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Title</th><th>Network</th><th>Nostalgia Line would pick</th>
+          <th>Your lineup says</th><th>Rule</th></tr></thead>
+        <tbody>
+          ${shown.map((d) => `
+          <tr class="is-clickable" data-detail="${esc(d.uid)}">
+            <td class="title-cell">${esc(d.title)} <span class="muted">${d.year ?? ''}</span></td>
+            <td>${esc(d.network || '—')}</td>
+            <td>${d.ours.map((c) => `<span class="chip">${c.number} ${esc(c.name)}</span>`).join(' ')}</td>
+            <td>${d.theirs.map((c) => `<span class="chip">${c.number} ${esc(c.name)}</span>`).join(' ')}</td>
+            <td class="why">${esc(d.rule.replace(/_/g, ' '))}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${data.disagreements_total > shown.length
+      ? `<p class="hint">…and ${data.disagreements_total - shown.length} more. The needs-review
+         and unassigned filters on the Library tab are the working views for these.</p>` : ''}`
+    : '<p class="hint">No disagreements in the sampled titles.</p>';
+
+  el.innerHTML = `
+    <div class="stats">
+      <div class="stat ${overallCls}">
+        <b>${data.sufficient ? `${data.pct}%` : '—'}</b>
+        <span>Agreement — ${data.agree} of ${data.sampled} sampled</span>
+      </div>
+      <div class="stat"><b>${data.ground_truth}</b><span>Lineup titles as ground truth</span></div>
+      <div class="stat ${data.disagreements_total ? 'warn' : ''}">
+        <b>${data.disagreements_total}</b><span>Disagreements</span>
+      </div>
+    </div>
+    ${data.sufficient ? ''
+      : `<p class="hint">Only ${data.sampled} usable sample(s) — at least ${data.min_samples}
+         are needed before a percentage means anything.</p>`}
+    <h4>By routing mode</h4>
+    <p class="hint">The same measurement under each mode — your library's numbers, for choosing
+      the mode on the Settings tab.</p>
+    <div class="stats">${modes}</div>
+    <h4>By rule</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rule</th><th class="num">Agreed</th><th class="num">Rate</th><th></th></tr></thead>
+        <tbody>${rules}</tbody>
+      </table>
+    </div>
+    ${suggestions}
+    ${disagreements}
+    ${data.skipped.no_opinion ? `<p class="hint">For ${data.skipped.no_opinion} lineup title(s)
+      the routing had no answer at all — they are on a channel only because your lineup already
+      put them there.</p>` : ''}`;
+}
 
 /* ── title detail ─────────────────────────────────────────── */
 const SOURCE_LABEL = {
@@ -927,8 +1250,10 @@ async function openDetail(uid) {
         : '<div class="detail-art"></div>'}
       <div>
         <h3>${esc(item.title)}</h3>
-        <div class="detail-meta">${item.year ?? '—'}${item.network ? ` · ${esc(item.network)}` : ''}</div>
-        <div class="detail-meta"><span class="src src-${esc(item.mapping_source)}">${esc(item.mapping_source)}</span></div>
+        <div class="detail-meta">${item.year ?? '—'}</div>
+        ${item.network ? `<div class="detail-station">${stationArt(item.network)}
+          <span class="detail-meta">${esc(item.network)}</span></div>` : ''}
+        <div class="detail-meta" style="margin-top:6px"><span class="src src-${esc(item.mapping_source)}">${esc(item.mapping_source)}</span></div>
       </div>
     </div>
 
@@ -982,6 +1307,19 @@ $('seg-network').addEventListener('click', async () => {
   if (networkCatalog === null) await loadNetworkCatalog();
   else renderNetworkCatalog();
 });
+
+/** Put the real station's mark next to the channel, so the pairing is visible. */
+async function loadChannelStation(number) {
+  const slot = $('channel-station');
+  slot.innerHTML = '';
+  try {
+    const data = await api(`/api/channels/${number}/network-catalog`);
+    if (data.network) {
+      slot.innerHTML = `<span class="arrow">stands in for</span>${stationArt(data.network)}
+        <span class="muted">${esc(data.network)}</span>`;
+    }
+  } catch { /* a channel with no station is normal */ }
+}
 
 /** What really aired on the station this channel parodies, and what you lack. */
 async function loadNetworkCatalog() {
@@ -1041,6 +1379,7 @@ async function openChannel(number) {
   showChannelPane('mine');
   $('channel-art').src = `${logoUrl(number)}?v=${state.logoVersion}`;
   $('channel-title').textContent = `${data.channel.number} · ${data.channel.name}`;
+  loadChannelStation(number);
   $('channel-sub').textContent =
     `${data.counts.in_library} from your library`
     + (data.counts.needs_review ? ` · ${data.counts.needs_review} need review` : '')
@@ -1342,6 +1681,46 @@ function syncSourceFields() {
 
 $('source').addEventListener('change', syncSourceFields);
 
+function fillQuietSelects() {
+  for (const id of ['sched-quiet-start', 'sched-quiet-end']) {
+    const select = $(id);
+    if (select.options.length > 1) continue;
+    for (let hour = 0; hour < 24; hour += 1) {
+      select.add(new Option(`${String(hour).padStart(2, '0')}:00`, String(hour)));
+    }
+  }
+}
+
+function syncSchedNote() {
+  $('sched-note').textContent = $('sched-enabled').checked
+    ? 'A due scan starts within a minute, unless one is already running. Results land '
+      + 'here exactly as if you had pressed Scan.'
+    : '';
+}
+
+['sched-enabled'].forEach((id) => $(id).addEventListener('change', syncSchedNote));
+
+/** Replace the spec's routing-mode figures with numbers measured on THIS
+ *  library, once a scan makes that possible. */
+async function decorateModeOptions() {
+  let acc;
+  try { acc = await api('/api/accuracy'); } catch { return; }
+  if (!acc.scanned || !acc.modes) return;
+  const base = {
+    streaming_first: 'Streaming-first — route to the original network',
+    hybrid: 'Hybrid — content type first',
+    themed: 'Themed — by what a show is',
+  };
+  const by_mode = Object.fromEntries(acc.modes.map((m) => [m.mode, m]));
+  for (const option of $('routing-mode').options) {
+    const m = by_mode[option.value];
+    if (!m || !base[option.value]) continue;
+    option.textContent = m.sufficient
+      ? `${base[option.value]} — matches your lineup ${m.pct}% (n=${m.sampled})`
+      : `${base[option.value]} — ${m.agree}/${m.sampled} here, too few to judge`;
+  }
+}
+
 async function loadSettings() {
   const settings = await api('/api/settings').catch(() => null);
   if (!settings) return;
@@ -1360,9 +1739,23 @@ async function loadSettings() {
   $('routing-mode').value = settings.routing_mode;
   $('multi-channel').value = settings.multi_channel;
   $('orphan-network').value = settings.orphan_network;
+
+  const sched = settings.schedule || {};
+  fillQuietSelects();
+  $('sched-enabled').checked = Boolean(sched.enabled);
+  const interval = String(sched.interval_hours ?? 24);
+  const intervalSelect = $('sched-interval');
+  if (![...intervalSelect.options].some((o) => o.value === interval)) {
+    intervalSelect.add(new Option(`${interval} hours`, interval));
+  }
+  intervalSelect.value = interval;
+  $('sched-quiet-start').value = sched.quiet_start ?? '';
+  $('sched-quiet-end').value = sched.quiet_end ?? '';
+  syncSchedNote();
+  decorateModeOptions();
 }
 
-$('save-settings').addEventListener('click', async () => {
+async function saveSettings() {
   const payload = {
     source: $('source').value,
     plex_url: $('plex-url').value.trim(),
@@ -1375,6 +1768,12 @@ $('save-settings').addEventListener('click', async () => {
     include_movies: $('include-movies').checked,
     multi_channel: $('multi-channel').value,
     orphan_network: $('orphan-network').value,
+    schedule: {
+      enabled: $('sched-enabled').checked,
+      interval_hours: Number($('sched-interval').value || 24),
+      quiet_start: $('sched-quiet-start').value === '' ? null : Number($('sched-quiet-start').value),
+      quiet_end: $('sched-quiet-end').value === '' ? null : Number($('sched-quiet-end').value),
+    },
   };
   if ($('plex-token').value.trim()) payload.plex_token = $('plex-token').value.trim();
   if ($('jellyfin-key').value.trim()) payload.jellyfin_api_key = $('jellyfin-key').value.trim();
@@ -1389,7 +1788,11 @@ $('save-settings').addEventListener('click', async () => {
   } catch (err) {
     banner(err.message, 'err');
   }
-});
+}
+
+// Save appears both in the page header and at the foot of the settings grid.
+$('save-settings').addEventListener('click', saveSettings);
+$('save-settings-2').addEventListener('click', saveSettings);
 
 function setBadge(id, state, text) {
   const el = $(id);
@@ -1444,7 +1847,7 @@ $('clear-posters').addEventListener('click', async () => {
 });
 
 // Both Import buttons (header and Settings) drive the one hidden file input.
-$('import-btn').addEventListener('click', () => $('channels-file').click());
+$('import-btn-3').addEventListener('click', () => $('channels-file').click());
 $('import-btn-2').addEventListener('click', () => $('channels-file').click());
 
 $('channels-file').addEventListener('change', async (event) => {
@@ -1470,7 +1873,7 @@ $('channels-file').addEventListener('change', async (event) => {
 });
 
 /* ── export ────────────────────────────────────────────────── */
-$('export-btn').addEventListener('click', async () => {
+$('export-btn-2').addEventListener('click', async () => {
   $('export-downloads').classList.add('is-hidden');
   await refreshExportPreview();
   $('export-dialog').showModal();
@@ -1520,6 +1923,67 @@ $('export-form').addEventListener('submit', async (event) => {
     $('export-downloads').classList.remove('is-hidden');
   } catch (err) {
     banner(err.message, 'err');
+  }
+});
+
+/* ── what to do next ──────────────────────────────────────── */
+const GUIDE_ACTIONS = {
+  settings: () => showTab('settings'),
+  scan: () => $('scan-btn').click(),
+  review: () => showTab('review'),
+  export: () => { showTab('library'); $('export-btn-2').click(); },
+  import: () => $('channels-file').click(),
+};
+
+let guideCompact = localStorage.getItem('guideCompact') === '1';
+
+async function renderGuide() {
+  let w;
+  try { w = await api('/api/workflow'); } catch { return; }
+  const el = $('guide');
+
+  const steps = w.steps.map((s, i) => `
+    ${i ? '<span class="gstep-arrow">›</span>' : ''}
+    <button class="gstep ${s.state}" data-step="${esc(s.key)}" title="${esc(s.detail || s.blurb)}">
+      <span class="dot">${s.state === 'done' ? '✓' : i + 1}</span>${esc(s.title)}
+    </button>`).join('');
+
+  const now = w.steps.find((s) => s.key === w.current);
+  const body = now && !guideCompact ? `
+    <div class="guide-now">
+      <div class="guide-now-text">
+        <b>Next: ${esc(now.title)}</b>
+        <p>${esc(now.blurb)}</p>
+        ${now.detail ? `<div class="detail">${esc(now.detail)}</div>` : ''}
+      </div>
+      <button class="btn btn-primary" data-guide-go="${esc(now.action)}">${esc(now.action_label)}</button>
+    </div>` : '';
+
+  el.className = `guide${guideCompact ? ' is-compact' : ''}`;
+  el.innerHTML = `
+    <div class="guide-steps">
+      ${steps}
+      <span class="spacer"></span>
+      <button class="guide-dismiss" id="guide-toggle">${guideCompact ? 'Show guidance' : 'Hide guidance'}</button>
+    </div>
+    ${body}`;
+}
+
+$('guide').addEventListener('click', (event) => {
+  if (event.target.closest('#guide-toggle')) {
+    guideCompact = !guideCompact;
+    localStorage.setItem('guideCompact', guideCompact ? '1' : '0');
+    renderGuide();
+    return;
+  }
+  const go = event.target.closest('[data-guide-go]');
+  if (go) { GUIDE_ACTIONS[go.dataset.guideGo]?.(); return; }
+  // Clicking a step takes you where that step happens.
+  const step = event.target.closest('[data-step]');
+  if (step) {
+    const spec = { connect: 'settings', scan: 'library', review: 'review',
+                   export: 'library', apply: 'library' }[step.dataset.step];
+    if (spec) showTab(spec);
   }
 });
 
@@ -1577,6 +2041,7 @@ $('auth-clear').addEventListener('click', async () => {
 
 /* ── boot ──────────────────────────────────────────────────── */
 checkAuth();
+renderGuide();
 refreshStatus();
 loadLibrary();
 setReviewMode('grouped');

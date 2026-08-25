@@ -147,6 +147,10 @@ class Resolution:
     network: str | None = None
     needs_review: bool = False
     review_reason: str = ""
+    # A rule too unreliable to place anything can still record what it would
+    # have chosen. The title stays unassigned; the reasoning is kept for the
+    # review queue, where accepting it is one click.
+    suggestion: Assignment | None = None
 
     @property
     def confidence(self) -> str:
@@ -172,6 +176,7 @@ class Resolution:
             "network": self.network,
             "needs_review": self.needs_review,
             "review_reason": self.review_reason,
+            "suggestion": self.suggestion.to_dict() if self.suggestion else None,
             "confidence": self.confidence,
         }
 
@@ -184,6 +189,9 @@ class Resolution:
             network=raw.get("network"),
             needs_review=bool(raw.get("needs_review", False)),
             review_reason=str(raw.get("review_reason", "")),
+            suggestion=(
+                Assignment.from_dict(raw["suggestion"]) if raw.get("suggestion") else None
+            ),
         )
 
 
@@ -521,14 +529,21 @@ class Cascade:
                     review_reason=f"custom station '{station.name}' matched on keywords only",
                 )
 
-        # Step 4 - genre channel, last resort. Always low confidence.
+        # Step 4 - genre, last resort. Measured against a real lineup it agreed
+        # 0/9 times, in line with the spec's 69% error rate on the low tier (S9),
+        # so it records a suggestion instead of placing anything. The title stays
+        # unassigned and flagged - never silently dropped (spec S3.5).
         if genre_hit := self._genre_channel(genres):
             return Resolution(
-                status=STATUS_LINE,
-                assignments=self._apply_stations([genre_hit]),
+                status=STATUS_UNASSIGNED,
                 network=network,
                 needs_review=True,
-                review_reason="placed by genre fallback only - verify before export",
+                suggestion=genre_hit,
+                review_reason=(
+                    f"genre fallback: {genre_hit.reason} suggests "
+                    f"{genre_hit.channel_number} {genre_hit.channel_name}, but genre alone "
+                    "places titles wrongly too often - left for you to decide"
+                ),
             )
 
         # Step 5 - unassigned. Never silently dropped.

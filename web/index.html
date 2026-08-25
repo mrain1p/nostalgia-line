@@ -27,10 +27,6 @@
   <div class="topbar-actions">
     <span id="scan-state" class="pill" data-state="idle">idle</span>
     <button id="cancel-btn" class="btn btn-ghost is-hidden">Cancel</button>
-    <div class="btn-group">
-      <button id="import-btn" class="btn" title="Load a channels.csv exported from NostalgiaTV">Import</button>
-      <button id="export-btn" class="btn">Export</button>
-    </div>
     <button id="scan-btn" class="btn btn-primary">Scan library</button>
     <input type="file" id="channels-file" accept=".csv,text/csv" hidden>
   </div>
@@ -59,14 +55,15 @@
   <button id="stale-rescan" class="btn btn-small">Re-scan now</button>
 </div>
 
+<div class="guide" id="guide"></div>
 <div class="provenance" id="provenance"></div>
 
 <nav class="tabs" role="tablist">
   <button class="tab is-active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
   <button class="tab" data-tab="review" role="tab">Review <span class="count" id="tab-review-count"></span></button>
-  <button class="tab" data-tab="networks" role="tab">Networks <span class="count" id="tab-networks-count"></span></button>
-  <button class="tab" data-tab="channels" role="tab">Channels</button>
-  <button class="tab" data-tab="stations" role="tab">Stations</button>
+  <button class="tab" data-tab="networks" role="tab" title="Point each real-world station at a NostalgiaTV channel">Station mapping <span class="count" id="tab-networks-count"></span></button>
+  <button class="tab" data-tab="channels" role="tab" title="Your NostalgiaTV channels and what is on each one">Channels</button>
+  <button class="tab" data-tab="stations" role="tab" title="Channels you created yourself in NostalgiaTV">Custom channels</button>
   <button class="tab" data-tab="settings" role="tab">Settings</button>
 </nav>
 </div>
@@ -74,6 +71,13 @@
 <main>
   <!-- ── Library ─────────────────────────────────────────────── -->
   <section id="tab-library" class="panel is-active">
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Library</h2>
+        <p>Every show in your media library and which channel it is going to. The tiles below are filters — click one to see exactly what it counts.</p>
+      </div>
+      <div class="page-actions"><button class="btn" id="import-btn-3">Import lineup</button><button class="btn btn-primary" id="export-btn-2">Export CSV</button></div>
+    </header>
     <div class="stats" id="stats"></div>
     <div id="diagnostics"></div>
 
@@ -90,6 +94,23 @@
         <option value="assigned">Placed by Line</option>
         <option value="already_assigned">Already assigned</option>
       </select>
+      <label class="switch">
+        <input type="checkbox" id="review-filter">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Needs review</span>
+      </label>
+      <button id="more-filters" class="btn btn-small" aria-expanded="false">
+        More filters <span class="count" id="more-count"></span>
+      </button>
+      <button id="clear-filters" class="btn btn-small btn-ghost is-hidden">Clear all</button>
+    </div>
+
+    <div class="toolbar toolbar-more is-hidden" id="filters-more">
+      <label class="switch" title="Titles the most recent scan added, or whose channel moved">
+        <input type="checkbox" id="since-filter">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">New since last scan</span>
+      </label>
       <select id="confidence-filter" aria-label="Confidence">
         <option value="">Any confidence</option>
         <option value="high">High</option>
@@ -110,19 +131,11 @@
         <option value="none">Not placed</option>
       </select>
       <select id="section-filter" aria-label="Library"><option value="">All libraries</option></select>
-
-      <label class="switch">
-        <input type="checkbox" id="review-filter">
-        <span class="switch-track"><span class="switch-thumb"></span></span>
-        <span class="switch-text">Needs review</span>
-      </label>
       <label class="switch">
         <input type="checkbox" id="show-posters" checked>
         <span class="switch-track"><span class="switch-thumb"></span></span>
         <span class="switch-text">Posters</span>
       </label>
-
-      <button id="clear-filters" class="btn btn-small btn-ghost">Clear</button>
     </div>
 
     <div id="active-filter" class="notice notice-info is-hidden"></div>
@@ -156,7 +169,7 @@
         </thead>
         <tbody id="library-body"></tbody>
       </table>
-      <p id="library-empty" class="empty">Run a scan to populate the library.</p>
+      <div id="library-empty" class="empty-state"></div>
     </div>
 
     <div class="pager">
@@ -173,11 +186,14 @@
 
   <!-- ── Review ──────────────────────────────────────────────── -->
   <section id="tab-review" class="panel">
-    <p class="lede">
-      Low-confidence placements and every orphan network. In the spec's own testing
-      <strong>22 of 32</strong> uncertain guesses were wrong — these are held back
-      from the export until you look at them.
-    </p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Review</h2>
+        <p>Placements the app is not confident about. These are held back from the export until you look — in the spec's own testing, 22 of 32 uncertain guesses turned out wrong. They group by cause, so this is usually a handful of decisions rather than a long list.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
+
     <div class="toolbar">
       <div class="segmented" role="tablist">
         <button class="seg is-on" id="rev-grouped" role="tab">Grouped</button>
@@ -188,15 +204,19 @@
     </div>
     <div id="review-groups"></div>
     <div id="review-list" class="cards"></div>
-    <p id="review-empty" class="empty">Nothing to review.</p>
+    <div id="review-empty" class="empty-state"></div>
   </section>
 
   <!-- ── Networks ────────────────────────────────────────────── -->
   <section id="tab-networks" class="panel">
-    <p class="lede">
-      Where your library actually comes from. Mapping one unmapped network places
-      every title on it at once. Worst-covered first.
-    </p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Station mapping</h2>
+        <p>Point each real-world station at a NostalgiaTV channel. HBO feeds H.B.Yo Min, AMC feeds A.M.Sea, and so on. Mapping one station moves every title on it at once, which makes this the fastest way to clear uncertainty. Worst-covered first.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
+
     <div class="stats" id="network-stats"></div>
     <div class="toolbar">
       <label class="switch">
@@ -221,12 +241,32 @@
         </thead>
         <tbody id="network-body"></tbody>
       </table>
-      <p id="network-empty" class="empty">Run a scan to see your networks.</p>
+      <div id="network-empty" class="empty-state"></div>
     </div>
+
+    <section class="accuracy" id="accuracy-panel">
+      <header class="page-head">
+        <div class="page-head-text">
+          <h3>Routing accuracy</h3>
+          <p>Every show your lineup already places is a known right answer. Nostalgia Line
+             re-routes each one independently and compares — so these are your library's
+             numbers, not a benchmark from someone else's. A disagreement is either a
+             routing bug or a debatable call in the lineup; both are worth a look.</p>
+        </div>
+      </header>
+      <div id="accuracy-body"><p class="hint">Measuring…</p></div>
+    </section>
   </section>
 
   <!-- ── Channels ────────────────────────────────────────────── -->
   <section id="tab-channels" class="panel">
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Channels</h2>
+        <p>Your 113 NostalgiaTV channels and how full each one is. Click a channel to see everything on it, and what the real station it parodies actually aired.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
     <div class="toolbar">
       <label class="switch">
         <input type="checkbox" id="hide-nocontent" checked>
@@ -277,11 +317,14 @@
 
   <!-- ── Stations ────────────────────────────────────────────── -->
   <section id="tab-stations" class="panel">
-    <p class="lede">
-      Point one of your own NostalgiaTV channels at a real lineup — a network TMDB
-      knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>), or an existing
-      channel whose content it should borrow.
-    </p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Custom channels</h2>
+        <p>Channels you created yourself in NostalgiaTV. Tell Nostalgia Line what each one is — a real station TMDB knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>), or an existing channel whose content it should borrow — and it will fill automatically.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
+
     <form id="station-form" class="card form-card">
       <div class="grid">
         <label class="field">Channel number<input type="number" id="st-number" placeholder="auto"></label>
@@ -312,6 +355,13 @@
 
   <!-- ── Settings ────────────────────────────────────────────── -->
   <section id="tab-settings" class="panel">
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Settings</h2>
+        <p>Where your library comes from, how titles are routed, and who can reach this app.</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="save-settings-2">Save settings</button></div>
+    </header>
     <div class="settings-grid">
 
       <section class="card settings-card">
@@ -425,10 +475,12 @@
         </label>
         <label class="field">Mode
           <select id="routing-mode">
-            <option value="streaming_first">Streaming-first — 85% agreement</option>
-            <option value="hybrid">Hybrid — content type first — 61%</option>
-            <option value="themed">Themed — by what a show is — 33%</option>
+            <option value="streaming_first">Streaming-first — 85% in spec testing</option>
+            <option value="hybrid">Hybrid — content type first — 61% in spec testing</option>
+            <option value="themed">Themed — by what a show is — 33% in spec testing</option>
           </select>
+          <small>Once a scan has run, these figures are re-measured against your own lineup —
+            the live numbers are on the Station mapping tab.</small>
         </label>
         <label class="field">Multi-channel
           <select id="multi-channel">
@@ -445,6 +497,41 @@
           </select>
         </label>
         </div>
+      </section>
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>Scheduled scans</h3>
+            <p>Re-scan on a timer so new shows surface without anyone remembering to
+               look. What changed shows up under “New since last scan”.</p>
+          </div>
+        </header>
+        <div class="settings-fields">
+        <label class="switch" style="margin-bottom:12px">
+          <input type="checkbox" id="sched-enabled">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-text">Scan on a schedule</span>
+        </label>
+        <label class="field">Every
+          <select id="sched-interval">
+            <option value="6">6 hours</option>
+            <option value="12">12 hours</option>
+            <option value="24">24 hours</option>
+            <option value="72">3 days</option>
+            <option value="168">7 days</option>
+          </select>
+        </label>
+        <label class="field">Quiet hours <small>(optional — a due scan waits until the window
+            ends; hours are the server's local time)</small>
+          <div class="field-pair">
+            <select id="sched-quiet-start"><option value="">off</option></select>
+            <span class="hint">to</span>
+            <select id="sched-quiet-end"><option value="">off</option></select>
+          </div>
+        </label>
+        </div>
+        <div id="sched-note" class="hint"></div>
       </section>
 
       <section class="card settings-card">
@@ -503,6 +590,7 @@
     <img id="channel-art" alt="" class="channel-art">
     <div>
       <h3 id="channel-title">Channel</h3>
+      <div class="pairing" id="channel-station"></div>
       <p id="channel-sub"></p>
     </div>
   </header>
