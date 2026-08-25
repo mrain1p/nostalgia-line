@@ -1,7 +1,7 @@
 # Nostalgia Line
 
-A companion app for **NostalgiaTV** that puts every show in your Plex library on a
-retro TV channel — and shows you the ones it can't place.
+A companion app for **NostalgiaTV** that puts every show in your Plex or Jellyfin
+library on a retro TV channel — and shows you the ones it can't place.
 
 NostalgiaTV ships a default `channels.csv` assigning ~4,200 well-known titles to
 channels. Anything else in your library plays nowhere, and there's no way to see
@@ -20,7 +20,7 @@ exposes `studio`, which is the *production company*, not the broadcast network.
 Across an 806-series library that produced 503 distinct values, topping out at
 "Marvel Studios" with 13. Plex has no network field at all.
 
-So the network comes from TMDB:
+So the network comes from TMDB, joined on the id your media server already stores:
 
 ```
 Plex library
@@ -129,8 +129,9 @@ python run.py
 
 ## Using it
 
-**Settings** → enter your Plex URL, `X-Plex-Token` and a TMDB API key (the same
-one Kometa uses), then hit **Test connection**.
+**Settings** → pick your media server (**Plex** or **Jellyfin**), enter its URL and
+credential, add a TMDB API key (the same one Kometa uses), then hit
+**Test connection**.
 
 **Scan library** → pulls every show, resolves each against TMDB, and diffs
 against your existing `channels.csv`. TMDB responses are cached on disk by
@@ -364,19 +365,25 @@ python -m pytest
 python run.py --reload
 ```
 
-170 tests covering the catalog, the cascade, custom stations, network mapping and
-the rollup, bulk assignment, Plex paging, cache durability, the export integrity
-guarantee, and the whole HTTP surface. No network access required — Plex and TMDB
-are faked throughout.
+191 tests covering the catalog, the cascade, custom stations, network mapping and
+the rollup, bulk assignment, both media-server adapters and their paging, cache
+durability, the export integrity guarantee, and the whole HTTP surface. No network
+access required — Plex, Jellyfin and TMDB are faked throughout.
+
+The Jellyfin adapter has **not** been run against a real server; its tests pin the
+documented response shapes. If Jellyfin changes, start there.
 
 ### Layout
 
 ```
 nostalgia_line/
   config.py     configuration, env-var overrides
+  media.py      MediaItem, guid/ProviderIds normalisation, LibrarySource
+  sources.py    picks the configured server
+  plex.py       Plex adapter
+  jellyfin.py   Jellyfin (and probably Emby) adapter
   channels.py   catalog, defaults, sanctioned pairs, title normalization
   stations.py   custom stations
-  plex.py       Plex client
   tmdb.py       TMDB client, disk cache, rate limiting
   cascade.py    the resolution cascade
   pipeline.py   scan orchestration
@@ -385,6 +392,32 @@ nostalgia_line/
   server.py     FastAPI app
 web/            single-page UI, no build step
 ```
+
+## Media servers, and why not NostalgiaTV
+
+Nostalgia Line reads your library from **Plex** or **Jellyfin**, selected in
+Settings. Both expose the TMDB id the cascade joins on — Plex as
+`<Guid id="tmdb://1396"/>`, Jellyfin as `ProviderIds: {"Tmdb": "1396"}` — and both
+normalise to the same internal item, so nothing downstream knows the difference.
+Emby is untested but uses the same API family as Jellyfin, so it may work by
+pointing the Jellyfin source at it.
+
+**NostalgiaTV itself is never contacted.** It does maintain its own content index
+with the same ids, and reading from it would cover every backend it supports in
+one integration. It was considered and rejected: the server API is closed,
+undocumented, licensed, and ships on a moving tag, so coupling to it means
+breaking whenever it refactors. `channels.csv` is a far more stable contract.
+
+The exchange is therefore file-based, in both directions:
+
+```
+NostalgiaTV  --export channels.csv-->  Nostalgia Line
+NostalgiaTV  <--import merged csv----  Nostalgia Line
+```
+
+One consequence worth knowing: your media server may hold libraries NostalgiaTV
+doesn't use. Set the per-library opt-in in Settings to match, or you'll route
+content NostalgiaTV can't play.
 
 ## Branches
 

@@ -15,11 +15,12 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED
 from .channels import ChannelCatalog, DefaultAssignments, load_network_map, load_orphan_networks
-from .config import Config, load_config, save_config
+from .config import SOURCES, Config, load_config, save_config
 from .export import build_addition_rows
 from .export import export as run_export
 from .pipeline import ScanResult, apply_override, run_scan
-from .plex import PlexClient, PlexError
+from .media import SourceError
+from .sources import build_source, missing_credential_message, source_is_configured
 from .stations import CUSTOM_BAND_START, CustomStation, StationBook
 from .store import Store
 from .tmdb import TMDBCache, TMDBClient, TMDBError
@@ -63,7 +64,7 @@ class AppState:
 
     @property
     def configured(self) -> bool:
-        return bool(self.cfg.plex.url and self.cfg.plex.token and self.cfg.tmdb.api_key)
+        return bool(source_is_configured(self.cfg) and self.cfg.tmdb.api_key)
 
 
 def _config_path() -> Path:
@@ -80,9 +81,13 @@ app = FastAPI(title="Nostalgia Line", version=__version__)
 
 
 class SettingsIn(BaseModel):
+    source: str | None = None
     plex_url: str | None = None
     plex_token: str | None = None
     plex_libraries: list[str] | None = None
+    jellyfin_url: str | None = None
+    jellyfin_api_key: str | None = None
+    jellyfin_libraries: list[str] | None = None
     tmdb_api_key: str | None = None
     routing_mode: str | None = None
     multi_channel: str | None = None
@@ -128,6 +133,7 @@ def status() -> dict:
     return {
         "version": __version__,
         "configured": state.configured,
+        "source": state.cfg.source,
         "config_path": str(state.config_path),
         "scanning": bool(state.scan_task and not state.scan_task.done()),
         "progress": state.progress,
@@ -151,9 +157,13 @@ def status() -> dict:
 def get_settings() -> dict:
     cfg = state.cfg
     return {
+        "source": cfg.source,
         "plex_url": cfg.plex.url,
         "plex_token_set": bool(cfg.plex.token),
         "plex_libraries": cfg.plex.libraries,
+        "jellyfin_url": cfg.jellyfin.url,
+        "jellyfin_api_key_set": bool(cfg.jellyfin.api_key),
+        "jellyfin_libraries": cfg.jellyfin.libraries,
         "tmdb_api_key_set": bool(cfg.tmdb.api_key),
         "routing_mode": cfg.routing.mode,
         "multi_channel": cfg.routing.multi_channel,
@@ -165,6 +175,16 @@ def get_settings() -> dict:
 @app.post("/api/settings")
 def put_settings(payload: SettingsIn) -> dict:
     cfg = state.cfg
+    if payload.source:
+        if payload.source not in SOURCES:
+            raise HTTPException(status_code=400, detail=f"source must be one of {SOURCES}")
+        cfg.source = payload.source
+    if payload.jellyfin_url is not None:
+        cfg.jellyfin.url = payload.jellyfin_url.strip()
+    if payload.jellyfin_api_key:
+        cfg.jellyfin.api_key = payload.jellyfin_api_key.strip()
+    if payload.jellyfin_libraries is not None:
+        cfg.jellyfin.libraries = [s for s in payload.jellyfin_libraries if s.strip()]
     if payload.plex_url is not None:
         cfg.plex.url = payload.plex_url.strip()
     if payload.plex_token:
@@ -190,20 +210,22 @@ def put_settings(payload: SettingsIn) -> dict:
 
 @app.post("/api/test-connection")
 async def test_connection() -> dict:
-    out: dict[str, Any] = {"plex": None, "tmdb": None}
+    out: dict[str, Any] = {"source": state.cfg.source, "server": None, "tmdb": None}
     try:
-        info = await PlexClient(state.cfg.plex.url, state.cfg.plex.token).ping()
-        sections = await PlexClient(state.cfg.plex.url, state.cfg.plex.token).sections()
-        out["plex"] = {
+        source = build_source(state.cfg)
+        info = await source.ping()
+        sections = await source.sections()
+        out["server"] = {
             "ok": True,
-            "name": info.get("friendlyName") or "Plex",
+            "kind": source.name,
+            "name": info.get("friendlyName") or source.name.title(),
             "version": info.get("version", ""),
             "sections": [
                 {"title": s.title, "type": s.type} for s in sections if s.type in ("show", "movie")
             ],
         }
-    except PlexError as exc:
-        out["plex"] = {"ok": False, "error": str(exc)}
+    except SourceError as exc:
+        out["server"] = {"ok": False, "kind": state.cfg.source, "error": str(exc)}
     try:
         cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
         await TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit).verify()
@@ -222,7 +244,8 @@ async def scan(include_movies: bool = False) -> dict:
         raise HTTPException(status_code=409, detail="a scan is already running")
     if not state.configured:
         raise HTTPException(
-            status_code=400, detail="Plex URL, Plex token and TMDB key must be set first"
+            status_code=400,
+            detail=f"{missing_credential_message(state.cfg)}, and a TMDB key",
         )
     state.last_error = ""
     state.stale = False
@@ -249,7 +272,7 @@ async def scan(include_movies: bool = False) -> dict:
             state.progress = {"phase": "cancelled", "done": 0, "total": 0}
             state.last_error = "scan cancelled"
             raise
-        except (PlexError, TMDBError) as exc:
+        except (SourceError, TMDBError) as exc:
             state.last_error = str(exc)
             state.progress = {"phase": "error", "done": 0, "total": 0}
         except Exception as exc:  # surfaced in the UI rather than lost to a log

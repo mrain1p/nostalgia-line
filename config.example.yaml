@@ -1,8 +1,18 @@
 # Nostalgia Line configuration. Copy to config.yaml and fill in.
+# Nearly all of this is editable in the web UI - you should not need to hand-edit it.
+
+source: plex                           # plex | jellyfin
+
 plex:
   url: http://192.168.1.245:32400     # host IP; Plex binds host network in Docker
   token: ""                            # X-Plex-Token
   libraries: []                        # opt-in per library, e.g. [Shows, Movies]. [] = all.
+
+jellyfin:
+  url: http://192.168.1.245:8096
+  api_key: ""                          # Dashboard > Advanced > API Keys
+  user_id: ""                          # optional; an admin is picked automatically
+  libraries: []                        # opt-in per library. [] = all.
 
 tmdb:
   api_key: ""                          # same key Kometa uses

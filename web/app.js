@@ -708,12 +708,25 @@ $('station-form').addEventListener('submit', async (event) => {
 });
 
 /* ── settings ──────────────────────────────────────────────── */
+function syncSourceFields() {
+  const source = $('source').value;
+  $('source-plex').classList.toggle('hidden', source !== 'plex');
+  $('source-jellyfin').classList.toggle('hidden', source !== 'jellyfin');
+}
+
+$('source').addEventListener('change', syncSourceFields);
+
 async function loadSettings() {
   const settings = await api('/api/settings').catch(() => null);
   if (!settings) return;
+  $('source').value = settings.source || 'plex';
+  syncSourceFields();
   $('plex-url').value = settings.plex_url || '';
   $('plex-libraries').value = (settings.plex_libraries || []).join(', ');
   $('plex-token').placeholder = settings.plex_token_set ? '•••••• (saved)' : 'required';
+  $('jellyfin-url').value = settings.jellyfin_url || '';
+  $('jellyfin-libraries').value = (settings.jellyfin_libraries || []).join(', ');
+  $('jellyfin-key').placeholder = settings.jellyfin_api_key_set ? '•••••• (saved)' : 'required';
   $('tmdb-key').placeholder = settings.tmdb_api_key_set ? '•••••• (saved)' : 'required';
   $('routing-mode').value = settings.routing_mode;
   $('multi-channel').value = settings.multi_channel;
@@ -723,17 +736,22 @@ async function loadSettings() {
 $('settings-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const payload = {
+    source: $('source').value,
     plex_url: $('plex-url').value.trim(),
     plex_libraries: splitList($('plex-libraries').value),
+    jellyfin_url: $('jellyfin-url').value.trim(),
+    jellyfin_libraries: splitList($('jellyfin-libraries').value),
     routing_mode: $('routing-mode').value,
     multi_channel: $('multi-channel').value,
     orphan_network: $('orphan-network').value,
   };
   if ($('plex-token').value.trim()) payload.plex_token = $('plex-token').value.trim();
+  if ($('jellyfin-key').value.trim()) payload.jellyfin_api_key = $('jellyfin-key').value.trim();
   if ($('tmdb-key').value.trim()) payload.tmdb_api_key = $('tmdb-key').value.trim();
   try {
     await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
     $('plex-token').value = '';
+    $('jellyfin-key').value = '';
     $('tmdb-key').value = '';
     banner('Settings saved.', 'ok', 2500);
     loadSettings(); refreshStatus();
@@ -746,10 +764,12 @@ $('test-btn').addEventListener('click', async () => {
   $('test-result').innerHTML = '<p class="hint">Testing…</p>';
   try {
     const result = await api('/api/test-connection', { method: 'POST' });
-    const plex = result.plex.ok
-      ? `<p class="result-ok">✓ Plex: ${esc(result.plex.name)} ${esc(result.plex.version)}</p>
-         <ul>${result.plex.sections.map((s) => `<li>${esc(s.title)} (${esc(s.type)})</li>`).join('')}</ul>`
-      : `<p class="result-err">✗ Plex: ${esc(result.plex.error)}</p>`;
+    const srv = result.server;
+    const label = srv.kind === 'jellyfin' ? 'Jellyfin' : 'Plex';
+    const plex = srv.ok
+      ? `<p class="result-ok">✓ ${esc(label)}: ${esc(srv.name)} ${esc(srv.version)}</p>
+         <ul>${srv.sections.map((s) => `<li>${esc(s.title)} (${esc(s.type)})</li>`).join('')}</ul>`
+      : `<p class="result-err">✗ ${esc(label)}: ${esc(srv.error)}</p>`;
     const tmdb = result.tmdb.ok
       ? `<p class="result-ok">✓ TMDB key accepted (${result.tmdb.cached.series || 0} series cached)</p>`
       : `<p class="result-err">✗ TMDB: ${esc(result.tmdb.error)}</p>`;

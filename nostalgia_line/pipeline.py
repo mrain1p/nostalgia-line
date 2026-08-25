@@ -16,7 +16,8 @@ from .cascade import (
 )
 from .channels import ChannelCatalog, DefaultAssignments, strip_year
 from .config import Config
-from .plex import MOVIE, SHOW, PlexClient, PlexItem
+from .media import MOVIE, SHOW, MediaItem
+from .sources import build_source, source_libraries
 from .stations import StationBook
 from .tmdb import TMDBCache, TMDBClient
 
@@ -229,7 +230,7 @@ def _countries(entries: list["LibraryEntry"]) -> list[str]:
     return sorted(out)
 
 
-def _episode_count(item: PlexItem, tmdb_record) -> int:
+def _episode_count(item: MediaItem, tmdb_record) -> int:
     if item.episode_count:
         return item.episode_count
     return getattr(tmdb_record, "episode_count", 0) or 0
@@ -255,11 +256,11 @@ async def run_scan(
 
     types = (SHOW, MOVIE) if include_movies else (SHOW,)
 
-    report("plex", 0, 0)
-    plex = PlexClient(cfg.plex.url, cfg.plex.token)
-    items, sections = await plex.fetch_library(cfg.plex.libraries or None, types=types)
+    source = build_source(cfg)
+    report(source.name, 0, 0)
+    items, sections = await source.fetch_library(source_libraries(cfg) or None, types=types)
     result.sections = [s.title for s in sections]
-    report("plex", len(items), len(items))
+    report(source.name, len(items), len(items))
 
     cache = TMDBCache(cfg.path(cfg.data.cache_dir))
     tmdb = TMDBClient(cfg.tmdb.api_key, cache, rate_limit=cfg.tmdb.rate_limit)

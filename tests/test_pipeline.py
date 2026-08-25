@@ -42,8 +42,10 @@ def test_item_uid_prefers_tmdb_and_is_stable():
 
 
 def test_item_uid_falls_back_when_there_is_no_guid():
+    """The fallback is server-agnostic - the same item is not 'plex:' on Plex
+    and 'jellyfin:' on Jellyfin, or a manual assignment would not survive a move."""
     item = PlexItem(rating_key="7", title="X", type="show", section="Shows")
-    assert item.uid == "plex:Shows:7"
+    assert item.uid == "local:Shows:7"
 
 
 # -- fakes ---------------------------------------------------------------
@@ -61,6 +63,8 @@ FAKE_LIBRARY = [
 
 
 class FakePlex:
+    name = "plex"
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -124,7 +128,7 @@ def cfg(tmp_path):
 
 @pytest.fixture
 def scan(monkeypatch, cfg, catalog, defaults):
-    monkeypatch.setattr("nostalgia_line.pipeline.PlexClient", FakePlex)
+    monkeypatch.setattr("nostalgia_line.pipeline.build_source", lambda cfg: FakePlex())
     monkeypatch.setattr("nostalgia_line.pipeline.TMDBClient", FakeTMDB)
 
     def go(stations=None, overrides=None, **kwargs):

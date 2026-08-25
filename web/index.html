@@ -205,18 +205,42 @@
   <section id="tab-settings" class="panel">
     <form id="settings-form" class="settings-form">
       <fieldset>
-        <legend>Plex</legend>
-        <label>Server URL
-          <input type="text" id="plex-url" placeholder="http://192.168.1.245:32400">
-          <small>Use the host IP, not <code>localhost</code>, when Nostalgia Line runs in Docker.</small>
+        <legend>Media server</legend>
+        <label>Where your library lives
+          <select id="source">
+            <option value="plex">Plex</option>
+            <option value="jellyfin">Jellyfin</option>
+          </select>
+          <small>NostalgiaTV is never contacted — it only supplies <code>channels.csv</code>.</small>
         </label>
-        <label>X-Plex-Token
-          <input type="password" id="plex-token" placeholder="leave blank to keep current" autocomplete="off">
-        </label>
-        <label>Libraries <small>comma separated, blank = every show library</small>
-          <input type="text" id="plex-libraries" placeholder="Shows, Anime">
-        </label>
+
+        <div id="source-plex">
+          <label>Plex server URL
+            <input type="text" id="plex-url" placeholder="http://192.168.1.245:32400">
+            <small>Use the host IP, not <code>localhost</code>, when Nostalgia Line runs in Docker.</small>
+          </label>
+          <label>X-Plex-Token
+            <input type="password" id="plex-token" placeholder="leave blank to keep current" autocomplete="off">
+          </label>
+          <label>Libraries <small>comma separated, blank = every show library</small>
+            <input type="text" id="plex-libraries" placeholder="Shows, Anime">
+          </label>
+        </div>
+
+        <div id="source-jellyfin" class="hidden">
+          <label>Jellyfin server URL
+            <input type="text" id="jellyfin-url" placeholder="http://192.168.1.245:8096">
+          </label>
+          <label>API key
+            <input type="password" id="jellyfin-key" placeholder="leave blank to keep current" autocomplete="off">
+            <small>Dashboard → Advanced → API Keys → <em>+</em></small>
+          </label>
+          <label>Libraries <small>comma separated, blank = every show library</small>
+            <input type="text" id="jellyfin-libraries" placeholder="Shows, Anime">
+          </label>
+        </div>
       </fieldset>
+
       <fieldset>
         <legend>TMDB</legend>
         <label>API key

@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+SOURCES = ("plex", "jellyfin")
 ROUTING_MODES = ("streaming_first", "hybrid", "themed")
 MULTI_CHANNEL_MODES = ("off", "sanctioned_pairs_only", "permissive")
 ORPHAN_MODES = ("parent_fallback", "content_type", "flag_only")
@@ -17,6 +18,14 @@ ORPHAN_MODES = ("parent_fallback", "content_type", "flag_only")
 class PlexConfig:
     url: str = "http://127.0.0.1:32400"
     token: str = ""
+    libraries: list[str] = field(default_factory=list)
+
+
+@dataclass
+class JellyfinConfig:
+    url: str = "http://127.0.0.1:8096"
+    api_key: str = ""
+    user_id: str = ""
     libraries: list[str] = field(default_factory=list)
 
 
@@ -69,7 +78,11 @@ class ServerConfig:
 
 @dataclass
 class Config:
+    # Which media server holds the library. NostalgiaTV is never contacted -
+    # it only supplies channels.csv, which the user imports and exports.
+    source: str = "plex"
     plex: PlexConfig = field(default_factory=PlexConfig)
+    jellyfin: JellyfinConfig = field(default_factory=JellyfinConfig)
     tmdb: TMDBConfig = field(default_factory=TMDBConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -87,6 +100,7 @@ class Config:
         d.pop("root", None)
         # never hand secrets to the browser
         d["plex"]["token"] = bool(self.plex.token)
+        d["jellyfin"]["api_key"] = bool(self.jellyfin.api_key)
         d["tmdb"]["api_key"] = bool(self.tmdb.api_key)
         return d
 
@@ -111,7 +125,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             raw = yaml.safe_load(fh) or {}
 
     cfg = Config(
+        source=str(raw.get("source") or "plex").strip().lower(),
         plex=PlexConfig(**_section(raw, "plex")),
+        jellyfin=JellyfinConfig(**_section(raw, "jellyfin")),
         tmdb=TMDBConfig(**_section(raw, "tmdb")),
         routing=RoutingConfig(**_section(raw, "routing")),
         output=OutputConfig(**_section(raw, "output")),
@@ -126,7 +142,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         cfg.plex.token = env
     if env := os.getenv("TMDB_API_KEY"):
         cfg.tmdb.api_key = env
+    if env := os.getenv("JELLYFIN_URL"):
+        cfg.jellyfin.url = env
+    if env := os.getenv("JELLYFIN_API_KEY"):
+        cfg.jellyfin.api_key = env
+    if env := os.getenv("NOSTALGIA_SOURCE"):
+        cfg.source = env.strip().lower()
 
+    if cfg.source not in SOURCES:
+        raise ValueError(f"source must be one of {SOURCES}, got {cfg.source!r}")
     cfg.routing.validate()
     return cfg
 
@@ -134,7 +158,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
 def save_config(cfg: Config, path: str | os.PathLike[str]) -> None:
     """Write config back out, preserving secrets already held in memory."""
     payload = {
+        "source": cfg.source,
         "plex": asdict(cfg.plex),
+        "jellyfin": asdict(cfg.jellyfin),
         "tmdb": asdict(cfg.tmdb),
         "routing": asdict(cfg.routing),
         "output": asdict(cfg.output),
