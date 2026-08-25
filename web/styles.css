@@ -630,3 +630,23 @@ tbody tr.is-clickable { cursor: pointer; }
 .page-head p { margin-top: 5px; font-size: 13px; color: var(--ink-2); line-height: 1.6; max-width: 82ch; }
 .page-actions { display: flex; gap: 8px; flex-wrap: wrap; flex: none; }
 .page-actions:empty { display: none; }
+
+/* ── empty states ─────────────────────────────────────────── */
+.empty-state { padding: 48px 24px; text-align: center; max-width: 62ch; margin: 0 auto; }
+.empty-state:empty { display: none; }
+.empty-state .icon {
+  width: 46px; height: 46px; margin: 0 auto 16px; border-radius: 12px;
+  display: grid; place-items: center; color: var(--accent);
+  background: var(--accent-glow); border: 1px solid var(--accent-deep);
+}
+.empty-state h3 { font-size: 15px; margin-bottom: 8px; }
+.empty-state p { font-size: 13px; color: var(--ink-2); line-height: 1.65; }
+.empty-state p + p { margin-top: 8px; }
+.empty-state .actions { display: flex; gap: 9px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
+.empty-state .note { color: var(--ink-3); font-size: 12px; margin-top: 14px; }
+
+.toolbar-more {
+  padding: 12px 14px; margin-top: -6px; margin-bottom: 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+}
+#more-filters .count { background: var(--accent-glow); color: var(--accent); }

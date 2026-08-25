@@ -94,6 +94,18 @@
         <option value="assigned">Placed by Line</option>
         <option value="already_assigned">Already assigned</option>
       </select>
+      <label class="switch">
+        <input type="checkbox" id="review-filter">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Needs review</span>
+      </label>
+      <button id="more-filters" class="btn btn-small" aria-expanded="false">
+        More filters <span class="count" id="more-count"></span>
+      </button>
+      <button id="clear-filters" class="btn btn-small btn-ghost is-hidden">Clear all</button>
+    </div>
+
+    <div class="toolbar toolbar-more is-hidden" id="filters-more">
       <select id="confidence-filter" aria-label="Confidence">
         <option value="">Any confidence</option>
         <option value="high">High</option>
@@ -114,19 +126,11 @@
         <option value="none">Not placed</option>
       </select>
       <select id="section-filter" aria-label="Library"><option value="">All libraries</option></select>
-
-      <label class="switch">
-        <input type="checkbox" id="review-filter">
-        <span class="switch-track"><span class="switch-thumb"></span></span>
-        <span class="switch-text">Needs review</span>
-      </label>
       <label class="switch">
         <input type="checkbox" id="show-posters" checked>
         <span class="switch-track"><span class="switch-thumb"></span></span>
         <span class="switch-text">Posters</span>
       </label>
-
-      <button id="clear-filters" class="btn btn-small btn-ghost">Clear</button>
     </div>
 
     <div id="active-filter" class="notice notice-info is-hidden"></div>
@@ -160,7 +164,7 @@
         </thead>
         <tbody id="library-body"></tbody>
       </table>
-      <p id="library-empty" class="empty">Run a scan to populate the library.</p>
+      <div id="library-empty" class="empty-state"></div>
     </div>
 
     <div class="pager">
@@ -195,7 +199,7 @@
     </div>
     <div id="review-groups"></div>
     <div id="review-list" class="cards"></div>
-    <p id="review-empty" class="empty">Nothing to review.</p>
+    <div id="review-empty" class="empty-state"></div>
   </section>
 
   <!-- ── Networks ────────────────────────────────────────────── -->
@@ -232,7 +236,7 @@
         </thead>
         <tbody id="network-body"></tbody>
       </table>
-      <p id="network-empty" class="empty">Run a scan to see your networks.</p>
+      <div id="network-empty" class="empty-state"></div>
     </div>
   </section>
 

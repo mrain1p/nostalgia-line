@@ -33,6 +33,7 @@ const state = {
   networkFilter: '',
   poll: null,
   lastItems: [],
+  configured: true,
   logoVersion: 0,
 };
 
@@ -131,6 +132,7 @@ async function refreshStatus() {
     }
   }
 
+  state.configured = status.configured;
   if (!status.configured) {
     standingBanner('Set your Plex URL, Plex token and TMDB key on the Settings tab to begin.');
   }
@@ -275,6 +277,95 @@ $('cancel-btn').addEventListener('click', async () => {
 
 $('stale-rescan').addEventListener('click', () => $('scan-btn').click());
 
+/* ── empty states ─────────────────────────────────────────── */
+const ICON_SCAN = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4" stroke-linecap="round"/></svg>`;
+const ICON_PLUG = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 3v6M15 3v6M6 9h12v3a6 6 0 0 1-12 0V9ZM12 18v3" stroke-linecap="round"/></svg>`;
+const ICON_DONE = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m4 12.5 5 5L20 6.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+function emptyState(el, { icon, title, body, actions = [], note = '' }) {
+  el.innerHTML = `
+    <div class="icon">${icon}</div>
+    <h3>${esc(title)}</h3>
+    ${body.map((b) => `<p>${b}</p>`).join('')}
+    ${actions.length ? `<div class="actions">${actions.map((a) =>
+      `<button class="btn ${a.primary ? 'btn-primary' : ''}" data-empty-go="${esc(a.go)}">${esc(a.label)}</button>`
+    ).join('')}</div>` : ''}
+    ${note ? `<div class="note">${note}</div>` : ''}`;
+}
+
+/** What the Library shows before there is anything to show. */
+function renderLibraryEmpty(scanned, filtered, configured) {
+  const el = $('library-empty');
+  if (!configured) {
+    emptyState(el, {
+      icon: ICON_PLUG,
+      title: 'Connect a media server first',
+      body: [
+        'Nostalgia Line needs to read your library from Plex or Jellyfin, and needs a '
+        + 'TMDB key to find out which network each show aired on — no media server stores that.',
+      ],
+      actions: [{ go: 'settings', label: 'Open settings', primary: true }],
+    });
+  } else if (!scanned) {
+    emptyState(el, {
+      icon: ICON_SCAN,
+      title: 'Scan your library to begin',
+      body: [
+        'A scan reads every show, looks each one up on TMDB, and works out which '
+        + 'NostalgiaTV channel it belongs on.',
+        '<strong>Nothing is changed anywhere.</strong> Your media server is only read from, '
+        + 'and your channel lineup is untouched until you export and choose to import it.',
+      ],
+      actions: [{ go: 'scan', label: 'Scan library', primary: true }],
+      note: 'A first scan of roughly 800 shows takes about 20 seconds. Later scans are faster.',
+    });
+  } else if (filtered) {
+    emptyState(el, {
+      icon: ICON_SCAN,
+      title: 'No titles match these filters',
+      body: ['Nothing in your library fits the current combination.'],
+      actions: [{ go: 'clear', label: 'Clear all filters' }],
+    });
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const go = event.target.closest('[data-empty-go]');
+  if (!go) return;
+  ({
+    settings: () => showTab('settings'),
+    scan: () => $('scan-btn').click(),
+    clear: () => $('clear-filters').click(),
+    networks: () => showTab('networks'),
+  })[go.dataset.emptyGo]?.();
+});
+
+/* ── filters ──────────────────────────────────────────────── */
+const HIDDEN_FILTERS = ['confidence-filter', 'type-filter', 'source-filter', 'section-filter'];
+
+function activeFilterCount() {
+  let n = HIDDEN_FILTERS.filter((id) => $(id).value).length;
+  if ($('q').value.trim()) n += 1;
+  if ($('status-filter').value) n += 1;
+  if ($('review-filter').checked) n += 1;
+  if (state.networkFilter) n += 1;
+  return n;
+}
+
+function syncFilterChrome() {
+  const hidden = HIDDEN_FILTERS.filter((id) => $(id).value).length;
+  $('more-count').textContent = hidden || '';
+  $('clear-filters').classList.toggle('is-hidden', activeFilterCount() === 0);
+}
+
+$('more-filters').addEventListener('click', () => {
+  const panel = $('filters-more');
+  const open = panel.classList.toggle('is-hidden');
+  $('more-filters').setAttribute('aria-expanded', String(!open));
+});
+
 /* ── library ───────────────────────────────────────────────── */
 function libraryParams(extra = {}) {
   const params = new URLSearchParams({
@@ -303,18 +394,14 @@ async function loadLibrary() {
   state.lastItems = data.items;
   const body = $('library-body');
 
-  if (!data.scanned) {
+  if (!data.scanned || !data.items.length) {
     body.innerHTML = '';
-    $('library-empty').textContent = 'Run a scan to populate the library.';
-    $('library-empty').classList.remove('is-hidden');
-  } else if (!data.items.length) {
-    body.innerHTML = '';
-    $('library-empty').textContent = 'No titles match these filters.';
-    $('library-empty').classList.remove('is-hidden');
+    renderLibraryEmpty(data.scanned, data.scanned && activeFilterCount() > 0, state.configured);
   } else {
-    $('library-empty').classList.add('is-hidden');
+    $('library-empty').innerHTML = '';
     body.innerHTML = data.items.map(rowHtml).join('');
   }
+  syncFilterChrome();
 
   const sectionSelect = $('section-filter');
   if (data.sections?.length && sectionSelect.options.length <= 1) {
@@ -757,7 +844,15 @@ async function loadReview() {
   reviewItems = data.items;
   renderReviewGroups(data.items);
   const list = $('review-list');
-  $('review-empty').classList.toggle('is-hidden', data.total > 0);
+  if (!data.total) {
+    emptyState($('review-empty'), {
+      icon: ICON_DONE,
+      title: 'Nothing to review',
+      body: ['Every placement is either confident enough to export, or you have already looked at it.'],
+    });
+  } else {
+    $('review-empty').innerHTML = '';
+  }
   list.innerHTML = data.items.map((item) => `
     <div class="card review">
       ${item.poster_path
@@ -797,7 +892,17 @@ async function loadNetworks() {
   if (!data) return;
   networkRows = data.networks;
   $('tab-networks-count').textContent = data.total || '';
-  $('network-empty').classList.toggle('is-hidden', data.scanned && data.total > 0);
+  if (!data.scanned) {
+    emptyState($('network-empty'), {
+      icon: ICON_SCAN,
+      title: 'Scan first',
+      body: ['This page lists the real-world stations your titles came from, which only '
+             + 'becomes known once a scan has looked them up on TMDB.'],
+      actions: [{ go: 'scan', label: 'Scan library', primary: true }],
+    });
+  } else {
+    $('network-empty').innerHTML = '';
+  }
 
   if (data.scanned) {
     const unmapped = data.networks.filter((n) => n.status === 'unmapped').length;
