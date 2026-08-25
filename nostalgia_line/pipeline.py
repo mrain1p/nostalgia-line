@@ -1,0 +1,338 @@
+"""Scan orchestration: Plex -> TMDB -> cascade -> diff (spec S13)."""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Callable
+
+from .cascade import (
+    HIGH,
+    STATUS_APP,
+    STATUS_LINE,
+    STATUS_UNASSIGNED,
+    Assignment,
+    Cascade,
+    Resolution,
+)
+from .channels import ChannelCatalog, DefaultAssignments, strip_year
+from .config import Config
+from .plex import MOVIE, SHOW, PlexClient, PlexItem
+from .stations import StationBook
+from .tmdb import TMDBCache, TMDBClient
+
+ProgressFn = Callable[[str, int, int], None]
+
+
+@dataclass
+class LibraryEntry:
+    """One row of the media-library view (spec S9)."""
+
+    uid: str
+    title: str
+    year: int | None
+    type: str
+    section: str
+    episode_count: int
+    tmdb_id: int | None
+    resolution: Resolution
+    overview: str = ""
+    poster_path: str = ""
+    network: str | None = None
+    genres: list[str] = field(default_factory=list)
+    origin_country: list[str] = field(default_factory=list)
+    season_count: int = 0
+    overridden: bool = False
+
+    @property
+    def status(self) -> str:
+        return self.resolution.status
+
+    @property
+    def channels(self) -> list[int]:
+        if self.resolution.status == STATUS_APP:
+            return list(self.resolution.existing_channels)
+        return [a.channel_number for a in self.resolution.assignments]
+
+    def to_dict(self, catalog: ChannelCatalog) -> dict:
+        return {
+            "uid": self.uid,
+            "title": self.title,
+            "year": self.year,
+            "type": self.type,
+            "section": self.section,
+            "episode_count": self.episode_count,
+            "tmdb_id": self.tmdb_id,
+            "network": self.network,
+            "genres": self.genres,
+            "origin_country": self.origin_country,
+            "season_count": self.season_count,
+            "overview": self.overview,
+            "poster_path": self.poster_path,
+            "overridden": self.overridden,
+            "status": self.status,
+            "channels": [
+                {"number": n, "name": catalog.name_of(n)} for n in self.channels
+            ],
+            **self.resolution.to_dict(),
+        }
+
+
+@dataclass
+class ScanResult:
+    entries: list[LibraryEntry] = field(default_factory=list)
+    sections: list[str] = field(default_factory=list)
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.finished_at - self.started_at)
+
+    def stats(self) -> dict:
+        by_status = {STATUS_APP: 0, STATUS_LINE: 0, STATUS_UNASSIGNED: 0}
+        by_rule: dict[str, int] = {}
+        by_confidence: dict[str, int] = {}
+        review = 0
+        for entry in self.entries:
+            by_status[entry.status] = by_status.get(entry.status, 0) + 1
+            if entry.resolution.needs_review:
+                review += 1
+            for assignment in entry.resolution.assignments:
+                by_rule[assignment.rule] = by_rule.get(assignment.rule, 0) + 1
+                by_confidence[assignment.confidence] = by_confidence.get(assignment.confidence, 0) + 1
+        total = len(self.entries)
+        placed = by_status[STATUS_APP] + by_status[STATUS_LINE]
+        return {
+            "total": total,
+            "already_assigned": by_status[STATUS_APP],
+            "assigned_by_line": by_status[STATUS_LINE],
+            "unassigned": by_status[STATUS_UNASSIGNED],
+            "needs_review": review,
+            "coverage_pct": round(100.0 * placed / total, 1) if total else 0.0,
+            "by_rule": dict(sorted(by_rule.items(), key=lambda kv: -kv[1])),
+            "by_confidence": by_confidence,
+            "duration_sec": round(self.duration, 1),
+            "sections": self.sections,
+            "errors": self.errors,
+        }
+
+    def channel_rollup(self, catalog: ChannelCatalog, defaults: DefaultAssignments) -> list[dict]:
+        """Channel-by-channel counts, flagging thin and empty channels (spec S9)."""
+        existing_counts: dict[int, int] = {}
+        for row in defaults.rows:
+            existing_counts[row.channel_number] = existing_counts.get(row.channel_number, 0) + 1
+        added: dict[int, int] = {}
+        for entry in self.entries:
+            if entry.status != STATUS_LINE:
+                continue
+            for number in entry.channels:
+                added[number] = added.get(number, 0) + 1
+        rows = []
+        for channel in catalog:
+            existing = existing_counts.get(channel.number, 0)
+            new = added.get(channel.number, 0)
+            total = existing + new
+            rows.append(
+                {
+                    "number": channel.number,
+                    "name": channel.name,
+                    "category": channel.category,
+                    "accepts_content": channel.accepts_content,
+                    "existing": existing,
+                    "added": new,
+                    "total": total,
+                    "empty": channel.accepts_content and total == 0,
+                    "thin": channel.accepts_content and 0 < total <= 3,
+                }
+            )
+        return rows
+
+    def review_queue(self) -> list[LibraryEntry]:
+        return [e for e in self.entries if e.resolution.needs_review and not e.overridden]
+
+    def network_rollup(self, network_map, orphan_map, catalog: ChannelCatalog) -> list[dict]:
+        """Every TMDB network in the library, with where it currently routes.
+
+        This is the leverage point. One unmapped network can strand forty titles;
+        deciding it once is worth forty individual decisions, which is exactly the
+        drudgery the spec calls untenable.
+        """
+        buckets: dict[str, list[LibraryEntry]] = {}
+        for entry in self.entries:
+            if entry.network:
+                buckets.setdefault(entry.network, []).append(entry)
+
+        rows = []
+        for network, group in buckets.items():
+            mapped = network_map.get(network, _countries(group))
+            orphan = orphan_map.get(network.casefold())
+            if network_map.is_overridden(network):
+                status = "custom"
+            elif mapped:
+                status = "mapped"
+            elif orphan:
+                status = "orphan"
+            else:
+                status = "unmapped"
+
+            target = mapped or (orphan[:2] if orphan else None)
+            landing: dict[int, int] = {}
+            for entry in group:
+                for number in entry.channels:
+                    landing[number] = landing.get(number, 0) + 1
+
+            rows.append(
+                {
+                    "network": network,
+                    "titles": len(group),
+                    "episodes": sum(e.episode_count for e in group),
+                    "status": status,
+                    "channel_number": target[0] if target else None,
+                    "channel_name": catalog.name_of(target[0]) if target else None,
+                    "needs_review": sum(1 for e in group if e.resolution.needs_review),
+                    "unassigned": sum(1 for e in group if e.status == STATUS_UNASSIGNED),
+                    "already_assigned": sum(1 for e in group if e.status == STATUS_APP),
+                    "landing": [
+                        {"number": n, "name": catalog.name_of(n), "titles": c}
+                        for n, c in sorted(landing.items(), key=lambda kv: -kv[1])
+                    ],
+                    "samples": [e.title for e in group[:6]],
+                }
+            )
+
+        # Worst first: unmapped networks with the most titles are the best use of
+        # the user's attention.
+        rank = {"unmapped": 0, "orphan": 1, "custom": 2, "mapped": 3}
+        rows.sort(key=lambda r: (rank[r["status"]], -r["titles"]))
+        return rows
+
+    def diagnostics(self) -> dict:
+        """Silent failure modes worth surfacing before the user blames the routing."""
+        no_tmdb = [e for e in self.entries if not e.tmdb_id]
+        no_network = [
+            e for e in self.entries if e.tmdb_id and not e.network and e.type == SHOW
+        ]
+        return {
+            "no_tmdb_id": len(no_tmdb),
+            "no_tmdb_samples": [e.title for e in no_tmdb[:8]],
+            "no_network": len(no_network),
+            "no_network_samples": [e.title for e in no_network[:8]],
+        }
+
+
+def _countries(entries: list["LibraryEntry"]) -> list[str]:
+    """Union of origin countries across a network's titles, for map disambiguation."""
+    out: set[str] = set()
+    for entry in entries:
+        out.update(entry.origin_country)
+    return sorted(out)
+
+
+def _episode_count(item: PlexItem, tmdb_record) -> int:
+    if item.episode_count:
+        return item.episode_count
+    return getattr(tmdb_record, "episode_count", 0) or 0
+
+
+async def run_scan(
+    cfg: Config,
+    catalog: ChannelCatalog,
+    defaults: DefaultAssignments,
+    stations: StationBook,
+    overrides: dict[str, list[int]] | None = None,
+    network_overrides: dict[str, int] | None = None,
+    include_movies: bool = False,
+    progress: ProgressFn | None = None,
+) -> ScanResult:
+    """Full pipeline. Shows only unless ``include_movies`` is set (1.0 scope)."""
+    overrides = overrides or {}
+    result = ScanResult(started_at=time.time())
+
+    def report(phase: str, done: int, total: int) -> None:
+        if progress:
+            progress(phase, done, total)
+
+    types = (SHOW, MOVIE) if include_movies else (SHOW,)
+
+    report("plex", 0, 0)
+    plex = PlexClient(cfg.plex.url, cfg.plex.token)
+    items, sections = await plex.fetch_library(cfg.plex.libraries or None, types=types)
+    result.sections = [s.title for s in sections]
+    report("plex", len(items), len(items))
+
+    cache = TMDBCache(cfg.path(cfg.data.cache_dir))
+    tmdb = TMDBClient(cfg.tmdb.api_key, cache, rate_limit=cfg.tmdb.rate_limit)
+
+    show_ids = [i.tmdb_id for i in items if i.is_show and i.tmdb_id]
+    movie_ids = [i.tmdb_id for i in items if not i.is_show and i.tmdb_id]
+
+    series_map = await tmdb.series(show_ids, progress=lambda d, t: report("tmdb_shows", d, t))
+    movie_map = {}
+    if include_movies and movie_ids:
+        movie_map = await tmdb.movies(movie_ids, progress=lambda d, t: report("tmdb_movies", d, t))
+
+    cascade = Cascade.from_config(
+        cfg, catalog, defaults, stations, network_overrides=network_overrides
+    )
+
+    report("resolve", 0, len(items))
+    for index, item in enumerate(items, start=1):
+        base_title, suffix_year = strip_year(item.title)
+        year = item.year or suffix_year
+        if item.is_show:
+            record = series_map.get(item.tmdb_id) if item.tmdb_id else None
+            resolution = cascade.resolve_series(base_title, year, record)
+        else:
+            record = movie_map.get(item.tmdb_id) if item.tmdb_id else None
+            resolution = cascade.resolve_movie(base_title, year, record)
+
+        entry = LibraryEntry(
+            uid=item.uid,
+            title=base_title,
+            year=year,
+            type=item.type,
+            section=item.section,
+            episode_count=_episode_count(item, record),
+            tmdb_id=item.tmdb_id,
+            resolution=resolution,
+            overview=(getattr(record, "overview", "") or item.summary)[:600],
+            poster_path=getattr(record, "poster_path", "") or "",
+            network=resolution.network,
+            genres=list(getattr(record, "genres", None) or item.genres),
+            origin_country=list(getattr(record, "origin_country", None) or []),
+            season_count=item.season_count,
+        )
+        apply_override(entry, overrides.get(entry.uid), catalog)
+        result.entries.append(entry)
+        if index % 100 == 0:
+            report("resolve", index, len(items))
+
+    report("resolve", len(items), len(items))
+    result.finished_at = time.time()
+    return result
+
+
+def apply_override(entry: LibraryEntry, channels: list[int] | None, catalog: ChannelCatalog) -> None:
+    """A human decision replaces whatever the cascade produced (spec S10.3)."""
+    if channels is None:
+        return
+    entry.overridden = True
+    entry.resolution.needs_review = False
+    entry.resolution.review_reason = ""
+    if not channels:
+        entry.resolution.status = STATUS_UNASSIGNED
+        entry.resolution.assignments = []
+        return
+    entry.resolution.status = STATUS_LINE
+    entry.resolution.assignments = [
+        Assignment(
+            channel_number=number,
+            channel_name=catalog.name_of(number),
+            rule="manual_override",
+            confidence=HIGH,
+            reason="assigned by hand",
+            primary=(position == 0),
+        )
+        for position, number in enumerate(channels)
+    ]

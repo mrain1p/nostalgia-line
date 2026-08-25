@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nostalgia Line</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📺</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📺</span>
+    <div>
+      <h1>Nostalgia Line</h1>
+      <p class="tagline">Put every show on a channel</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span id="scan-state" class="pill pill-idle">idle</span>
+    <button id="cancel-btn" class="btn btn-small hidden">Cancel</button>
+    <button id="scan-btn" class="btn btn-primary">Scan library</button>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+<div id="stale-bar" class="stale-bar hidden">
+  <span id="stale-text"></span>
+  <button id="stale-rescan" class="btn btn-small">Re-scan now</button>
+</div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
+  <button class="tab" data-tab="review" role="tab">Review <span class="count" id="tab-review-count"></span></button>
+  <button class="tab" data-tab="networks" role="tab">Networks <span class="count" id="tab-networks-count"></span></button>
+  <button class="tab" data-tab="channels" role="tab">Channels</button>
+  <button class="tab" data-tab="stations" role="tab">Custom stations</button>
+  <button class="tab" data-tab="settings" role="tab">Settings</button>
+</nav>
+
+<main>
+  <!-- ── Library ─────────────────────────────────────────────── -->
+  <section id="tab-library" class="panel active">
+    <div class="stats" id="stats"></div>
+    <div id="diagnostics"></div>
+
+    <div class="toolbar">
+      <input id="q" type="search" placeholder="Search title or network…" autocomplete="off">
+      <select id="status-filter">
+        <option value="">All statuses</option>
+        <option value="unassigned">Unassigned only</option>
+        <option value="assigned">Assigned by Nostalgia Line</option>
+        <option value="already_assigned">Already in NostalgiaTV</option>
+      </select>
+      <select id="confidence-filter">
+        <option value="">Any confidence</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+        <option value="none">Unplaced</option>
+      </select>
+      <select id="section-filter"><option value="">All libraries</option></select>
+      <label class="check"><input type="checkbox" id="review-filter"> Needs review</label>
+      <button id="clear-filters" class="btn btn-small">Clear</button>
+      <span class="spacer"></span>
+      <button id="export-btn" class="btn btn-primary">Export…</button>
+    </div>
+
+    <div id="active-filter" class="active-filter hidden"></div>
+
+    <div id="bulk-bar" class="bulk-bar hidden">
+      <strong id="bulk-count">0 selected</strong>
+      <button class="btn btn-small" id="bulk-select-all">Select all matching</button>
+      <span class="spacer"></span>
+      <button class="btn btn-small" id="bulk-assign">Assign to…</button>
+      <button class="btn btn-small" id="bulk-add">Add a channel…</button>
+      <button class="btn btn-small" id="bulk-unassign">Unassign</button>
+      <button class="btn btn-small" id="bulk-clear">Deselect</button>
+    </div>
+
+    <div class="table-wrap">
+      <table id="library-table">
+        <thead>
+          <tr>
+            <th class="tick"><input type="checkbox" id="check-page" title="Select this page"></th>
+            <th data-sort="title" class="sortable">Title</th>
+            <th data-sort="year" class="sortable num col-year">Year</th>
+            <th data-sort="seasons" class="sortable num col-sn">Sn</th>
+            <th data-sort="episodes" class="sortable num col-eps">Eps</th>
+            <th data-sort="network" class="sortable">Network</th>
+            <th data-sort="channel" class="sortable">Channel</th>
+            <th data-sort="confidence" class="sortable col-conf">Conf</th>
+            <th data-sort="status" class="sortable">Status</th>
+            <th class="col-why">Why</th>
+          </tr>
+        </thead>
+        <tbody id="library-body"></tbody>
+      </table>
+      <p id="library-empty" class="empty">Run a scan to populate the library.</p>
+    </div>
+
+    <div class="pager">
+      <button id="prev" class="btn btn-small">‹ Prev</button>
+      <span id="page-info"></span>
+      <button id="next" class="btn btn-small">Next ›</button>
+      <select id="page-size">
+        <option value="100">100 / page</option>
+        <option value="250">250 / page</option>
+        <option value="500">500 / page</option>
+      </select>
+    </div>
+  </section>
+
+  <!-- ── Review queue ────────────────────────────────────────── -->
+  <section id="tab-review" class="panel">
+    <p class="hint">
+      Low-confidence placements and every orphan network. In the spec's own testing
+      <strong>22 of 32</strong> uncertain guesses were wrong — check these before exporting.
+      Low-confidence rows are held back from the export until you do.
+    </p>
+    <div id="review-list" class="cards"></div>
+    <p id="review-empty" class="empty">Nothing to review.</p>
+  </section>
+
+  <!-- ── Networks ────────────────────────────────────────────── -->
+  <section id="tab-networks" class="panel">
+    <p class="hint">
+      Where your library's content actually comes from. Mapping one unmapped network
+      places every title on it at once — far less work than deciding them one by one.
+      Worst-covered networks are listed first.
+    </p>
+    <div class="stats" id="network-stats"></div>
+    <div class="toolbar">
+      <label class="check"><input type="checkbox" id="only-unmapped"> Only unmapped &amp; orphan</label>
+      <input id="network-q" type="search" placeholder="Filter networks…" autocomplete="off">
+    </div>
+    <div class="table-wrap">
+      <table id="network-table">
+        <thead>
+          <tr>
+            <th>Network</th><th class="num">Titles</th><th class="num">Eps</th>
+            <th>Status</th><th>Routes to</th><th>Map every title to…</th>
+          </tr>
+        </thead>
+        <tbody id="network-body"></tbody>
+      </table>
+      <p id="network-empty" class="empty">Run a scan to see your networks.</p>
+    </div>
+  </section>
+
+  <!-- ── Channels ────────────────────────────────────────────── -->
+  <section id="tab-channels" class="panel">
+    <div class="toolbar">
+      <label class="check"><input type="checkbox" id="hide-nocontent" checked> Hide music &amp; utility channels</label>
+      <label class="check"><input type="checkbox" id="only-problem"> Only empty or thin</label>
+      <span class="spacer"></span>
+      <span class="hint-inline">Streaming-first concentrates content — watch for one channel swallowing the library.</span>
+    </div>
+    <div class="table-wrap">
+      <table id="channel-table">
+        <thead>
+          <tr><th class="num">#</th><th>Channel</th><th>Category</th><th class="num">Existing</th><th class="num">Added</th><th class="num">Total</th><th>Balance</th></tr>
+        </thead>
+        <tbody id="channel-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Custom stations ─────────────────────────────────────── -->
+  <section id="tab-stations" class="panel">
+    <p class="hint">
+      Point one of your own NostalgiaTV channels at a real lineup. Give it a network
+      TMDB knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>) or an existing
+      channel whose content it should borrow.
+    </p>
+    <form id="station-form" class="station-form">
+      <div class="grid">
+        <label>Channel number<input type="number" id="st-number" placeholder="auto"></label>
+        <label>Station name<input type="text" id="st-name" required placeholder="Retro Gaming"></label>
+        <label>Mode
+          <select id="st-mode">
+            <option value="claim">Claim — take the content</option>
+            <option value="mirror">Mirror — also show it</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid">
+        <label>Source networks <small>comma separated</small>
+          <input type="text" id="st-networks" placeholder="G4, TechTV">
+        </label>
+        <label>Borrow channels <small>numbers, comma separated</small>
+          <input type="text" id="st-channels" placeholder="1007, 1006">
+        </label>
+        <label>Keywords <small>optional</small>
+          <input type="text" id="st-keywords" placeholder="video game, esports">
+        </label>
+      </div>
+      <button class="btn btn-primary" type="submit">Save station</button>
+    </form>
+    <div id="station-problems"></div>
+    <div id="station-list" class="cards"></div>
+  </section>
+
+  <!-- ── Settings ────────────────────────────────────────────── -->
+  <section id="tab-settings" class="panel">
+    <form id="settings-form" class="settings-form">
+      <fieldset>
+        <legend>Plex</legend>
+        <label>Server URL
+          <input type="text" id="plex-url" placeholder="http://192.168.1.245:32400">
+          <small>Use the host IP, not <code>localhost</code>, when Nostalgia Line runs in Docker.</small>
+        </label>
+        <label>X-Plex-Token
+          <input type="password" id="plex-token" placeholder="leave blank to keep current" autocomplete="off">
+        </label>
+        <label>Libraries <small>comma separated, blank = every show library</small>
+          <input type="text" id="plex-libraries" placeholder="Shows, Anime">
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>TMDB</legend>
+        <label>API key
+          <input type="password" id="tmdb-key" placeholder="leave blank to keep current" autocomplete="off">
+          <small>The same key Kometa uses.</small>
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Routing</legend>
+        <label>Mode
+          <select id="routing-mode">
+            <option value="streaming_first">Streaming-first — 85% agreement (recommended)</option>
+            <option value="hybrid">Hybrid — content-type gets first claim (61%)</option>
+            <option value="themed">Themed — route purely by what a show is (33%)</option>
+          </select>
+        </label>
+        <label>Multi-channel
+          <select id="multi-channel">
+            <option value="sanctioned_pairs_only">Only pairings the default file already uses</option>
+            <option value="off">Single channel only</option>
+            <option value="permissive">Allow any second channel</option>
+          </select>
+        </label>
+        <label>Unmapped networks
+          <select id="orphan-network">
+            <option value="parent_fallback">Route to the closest sibling and flag</option>
+            <option value="content_type">Fall through to content-type rules</option>
+            <option value="flag_only">Never place — flag for review</option>
+          </select>
+        </label>
+      </fieldset>
+      <div class="settings-actions">
+        <button class="btn btn-primary" type="submit">Save settings</button>
+        <button class="btn" type="button" id="test-btn">Test connection</button>
+      </div>
+      <div id="test-result"></div>
+    </form>
+
+    <fieldset class="settings-form">
+      <legend>Your channel lineup</legend>
+      <p class="hint">
+        Nostalgia Line ships the stock NostalgiaTV defaults. If you've customised your
+        channels, upload your own <code>channels.csv</code> export — the diff and the
+        sanctioned-pair rules are both rebuilt from your file. The current file is
+        backed up first, and nothing is replaced unless the upload parses cleanly.
+      </p>
+      <p id="defaults-summary" class="hint-inline"></p>
+      <input type="file" id="channels-file" accept=".csv,text/csv">
+      <div id="upload-result"></div>
+    </fieldset>
+  </section>
+</main>
+
+<!-- assignment dialog -->
+<dialog id="assign-dialog">
+  <form method="dialog" id="assign-form">
+    <h3 id="assign-title">Assign to a channel</h3>
+    <p id="assign-context" class="assign-context"></p>
+    <input type="search" id="assign-search" placeholder="Filter channels…" autocomplete="off">
+    <div id="assign-options" class="assign-options"></div>
+    <div class="assign-actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn btn-primary" id="assign-save" value="save">Assign</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- export dialog -->
+<dialog id="export-dialog">
+  <form method="dialog" id="export-form">
+    <h3>Export</h3>
+    <p class="assign-context">
+      Two files, both in the same four-column format NostalgiaTV reads.
+      <strong>channels_merged.csv</strong> is the one you upload back.
+    </p>
+    <label class="check">
+      <input type="checkbox" id="export-review"> Include low-confidence rows that still need review
+    </label>
+    <div id="export-preview" class="export-preview"></div>
+    <div class="assign-actions">
+      <button class="btn" value="cancel">Close</button>
+      <button class="btn" id="export-write" value="write" type="submit">Write files</button>
+    </div>
+    <div id="export-downloads" class="assign-actions hidden">
+      <a class="btn" href="/api/download/additions" download>Download additions</a>
+      <a class="btn btn-primary" href="/api/download/merged" download>Download merged</a>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

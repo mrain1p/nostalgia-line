@@ -1,0 +1,30 @@
+# Nostalgia Line configuration. Copy to config.yaml and fill in.
+plex:
+  url: http://192.168.1.245:32400     # host IP; Plex binds host network in Docker
+  token: ""                            # X-Plex-Token
+  libraries: []                        # opt-in per library, e.g. [Shows, Movies]. [] = all.
+
+tmdb:
+  api_key: ""                          # same key Kometa uses
+  rate_limit: 50                       # requests/sec. TMDB's documented ceiling.
+
+routing:
+  mode: streaming_first                # streaming_first | hybrid | themed
+  multi_channel: sanctioned_pairs_only # off | sanctioned_pairs_only | permissive
+  orphan_network: parent_fallback      # parent_fallback | content_type | flag_only
+
+output:
+  additions_only: channels_additions.csv
+  merged: channels_merged.csv
+
+data:
+  channels_csv: data/channels.csv       # the NostalgiaTV defaults you are adding to
+  network_map: data/network_map.csv
+  orphan_networks: data/orphan_networks.csv
+  channel_catalog: data/channel_catalog.csv
+  cache_dir: .cache
+  state_file: state.json
+
+server:
+  host: 127.0.0.1
+  port: 8777

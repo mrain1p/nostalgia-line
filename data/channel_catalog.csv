@@ -1,0 +1,114 @@
+channel_number,app_key,channel_name,category,accepts_content
+1001,app_dizzy_channel,Dizzy Channel,kids,true
+1002,app_dizzy_junior,Dizzy Junior,kids,true
+1003,app_dizzy_xd,DizzyXD,kids,true
+1004,app_toon_dizzy,Toon Dizzy,kids,true
+1005,app_playhome_dizzy,Playhome Dizzy,kids,true
+1006,app_cartoon_net,Cartoon Net,kids,true
+1007,app_boomer_rang,Boomer-Rang,kids,true
+1008,app_pennyodeon,Pennyodeon,kids,true
+1009,app_penny_jr,Penny Jr.,kids,true
+1010,app_pb_yes_tots,P.B.Yes Tots,kids,true
+1011,app_pb_yes,P.B.Yes,kids,true
+1012,app_meal_network,Meal Network,cable,true
+1013,app_tv_world,TV World,cable,true
+1014,app_ef_x,EF-X,cable,true
+1015,app_ef_xx,EF-XX,cable,true
+1016,app_eon_television,eon Television,cable,true
+1017,app_story_channel,Story Channel,cable,true
+1018,app_nb_sea,N.B.Sea,broadcast,true
+1019,app_ab_sea,A.B.Sea,broadcast,true
+1020,app_ntv,NTV,broadcast,true
+1021,app_sea_w,SeaW,broadcast,true
+1022,app_cb_yes,C.B.Yes,broadcast,true
+1023,app_faux,FAUX,broadcast,true
+1024,app_hgt_vee,H.G.T.Vee,cable,true
+1025,app_am_sea,A.M.Sea,cable,true
+1026,app_bb_sea,B.B.Sea,cable,true
+1027,app_tn_tea,T.N.Tea,cable,true
+1028,app_tl_sea,T.L.Sea,cable,true
+1029,app_bravio,Bravio,cable,true
+1030,app_betv,BETV,cable,true
+1031,app_trademark_channel,Trademark Channel,cable,true
+1032,app_uncover_channel,Uncover Channel,cable,true
+1033,app_animal_globe,Animal Globe,cable,true
+1034,app_you_tv,YouTV,cable,true
+1035,app_national_geography,National Geography,cable,true
+1036,app_sigh_fi,Sigh-Fi,cable,true
+1037,app_terror_channel,Terror Channel,cable,true
+1038,app_comedy_middle,Comedy Middle,cable,true
+1039,app_mgn,M.G.N.,premium,true
+1040,app_watch_on_repeat,Watch-On-Repeat,cable,true
+1041,app_nap_at_nite,Nap @ Nite,cable,true
+1042,app_faux_kids,Faux Kids,kids,true
+1043,app_kids_dub,Kids' DuB,kids,true
+1044,app_tee_bs,TeeBS,cable,true
+1045,app_spoke,Spoke,cable,true
+1046,app_truth_tv,TruthTV,cable,true
+1047,app_us_yay,US Yay,cable,true
+1048,app_a_and_me,A&Me,cable,true
+1049,app_guess_sn,GuessSN,cable,true
+1050,app_tcn,TCN,cable,true
+1051,app_adult_skim,Adult Skim,cable,true
+1052,app_holiday_channel,Holiday Channel,cable,true
+1053,app_vhs_channel,VHS Channel,cable,true
+1054,app_lackluster,LACKLUSTER,special,true
+1055,app_sparz,SPARZ,premium,true
+1056,app_cinemin,CINEMIN,premium,true
+1057,app_feeform,Feeform,cable,true
+1058,app_lifetune,Lifetune,cable,true
+1059,app_trip_channel,Trip Channel,cable,true
+1060,app_sea_nn,Sea.N.N.,cable,true
+1061,app_yespn,YESPN,cable,true
+1062,app_cb_sea,C.B.Sea,broadcast,true
+1063,app_dizzy_plus,Dizzy+,streaming,true
+1064,app_netflicks,Netflicks,streaming,true
+1065,app_pear_tv_plus,Pear TV+,streaming,true
+1066,app_hula,Hula,streaming,true
+1067,app_paramountain_plus,Paramountain+,streaming,true
+1068,app_hb_yo_min,H.B.Yo Min,premium,true
+1069,app_primary_video,Primary Video,streaming,true
+1070,app_viewtime,Viewtime,premium,true
+1071,app_munchyroll,Munchyroll,streaming,true
+1072,app_storm_channel,Storm Channel,utility,false
+1073,app_whats_on,What's On,utility,false
+1074,app_tune_rock,Tune Rock,music,false
+1075,app_tune_pop,Tune Pop,music,false
+1076,app_tune_hiphop,Tune Hip-Hop,music,false
+1077,app_tune_jazz,Tune Jazz,music,false
+1078,app_tune_classical,Tune Classical,music,false
+1079,app_tune_electronic,Tune Electronic,music,false
+1080,app_tune_country,Tune Country,music,false
+1081,app_tune_metal,Tune Metal,music,false
+1082,app_tune_blues,Tune Blues,music,false
+1083,app_tune_soundtrack,Tune Soundtrack,music,false
+1084,app_tune_gospel,Tune Gospel,music,false
+1085,app_tune_kids,Tune Kids,music,false
+1086,app_tune_variety,Tune Variety,music,false
+1087,app_tune_oldies,Tune Oldies,music,false
+1088,app_tune_holiday,Tune Holiday,music,false
+1089,app_decade_1950,The 1950's,decade,true
+1090,app_decade_1960,The 1960's,decade,true
+1091,app_decade_1970,The 1970's,decade,true
+1092,app_decade_1980,The 1980's,decade,true
+1093,app_decade_1990,The 1990's,decade,true
+1094,app_decade_2000,The 2000's,decade,true
+1095,app_decade_2010,The 2010's,decade,true
+1096,app_decade_2020,The 2020's,decade,true
+1097,app_genre_action,Adrenaline,genre,true
+1098,app_genre_comedy,Punchline,genre,true
+1099,app_genre_drama,Spotlight,genre,true
+1100,app_genre_western,The Frontier,genre,true
+1101,app_genre_family,Family Room,genre,true
+1102,app_genre_crime,Case Closed,genre,true
+1103,app_genre_war,Battleground,genre,true
+1104,app_genre_scifi,Event Horizon,genre,true
+1105,app_genre_romance,Heartstrings,genre,true
+1106,app_genre_thriller,Cliffhanger,genre,true
+1107,app_genre_fantasy,Spellbound,genre,true
+1108,app_genre_adventure,Uncharted,genre,true
+1109,app_genre_musical,Showstopper,genre,true
+1110,app_genre_superhero,ComicVerse,genre,true
+1111,app_spanish_network,TeleMondo,special,true
+1112,app_criterion,Benchmark Hits,special,true
+1113,app_oscars,Oscar Hits,special,true

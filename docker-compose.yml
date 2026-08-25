@@ -1,0 +1,29 @@
+# Nostalgia Line — pull and run. No build step.
+#
+#   docker login ghcr.io -u mrain1p        # one time, see README
+#   docker compose pull && docker compose up -d
+#
+# Then open http://localhost:8777 and fill in the Settings tab.
+# To build from source instead: docker compose -f docker-compose.build.yml up -d --build
+
+services:
+  nostalgia-line:
+    image: ghcr.io/mrain1p/nostalgia-line:latest
+    container_name: nostalgia-line
+    ports:
+      - "8777:8777"
+    volumes:
+      # Config, your channels.csv, overrides, exports and the TMDB cache.
+      # Keep this mounted and an image upgrade never touches your data.
+      - ./config:/config
+    environment:
+      - TZ=America/Chicago
+      # Optional — the Settings tab writes these into /config/config.yaml for you.
+      # Set them here only if you would rather keep them in compose.
+      # - PLEX_URL=http://192.168.1.245:32400
+      # - PLEX_TOKEN=
+      # - TMDB_API_KEY=
+    # Match your host user so files written to ./config stay editable.
+    # Find yours with: id -u && id -g
+    # user: "1000:1000"
+    restart: unless-stopped

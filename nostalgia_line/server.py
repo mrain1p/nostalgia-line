@@ -1,0 +1,688 @@
+"""FastAPI app. Everything the user needs is in the GUI; the YAML is only a seed."""
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from . import __version__
+from .cascade import STATUS_APP, STATUS_LINE, STATUS_UNASSIGNED
+from .channels import ChannelCatalog, DefaultAssignments, load_network_map, load_orphan_networks
+from .config import Config, load_config, save_config
+from .export import build_addition_rows
+from .export import export as run_export
+from .pipeline import ScanResult, apply_override, run_scan
+from .plex import PlexClient, PlexError
+from .stations import CUSTOM_BAND_START, CustomStation, StationBook
+from .store import Store
+from .tmdb import TMDBCache, TMDBClient, TMDBError
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_ROOT.parent
+WEB_DIR = PROJECT_ROOT / "web"
+
+
+class AppState:
+    """Everything the request handlers share. Rebuilt when settings change."""
+
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
+        self.cfg: Config = load_config(config_path)
+        self.catalog = ChannelCatalog.load(self.cfg.path(self.cfg.data.channel_catalog))
+        self.defaults = DefaultAssignments.load(self.cfg.path(self.cfg.data.channels_csv))
+        self.stations = StationBook.load(self.cfg.path("stations.json"))
+        self.stations.register_with(self.catalog)
+        self.store = Store(self.cfg.path(self.cfg.data.state_file))
+        self.result: ScanResult | None = None
+        self.scan_task: asyncio.Task | None = None
+        self.progress: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0}
+        self.last_error: str = ""
+        self.last_export: dict | None = None
+        # Set whenever a routing input changes. The displayed scan was produced
+        # under the old rules, so it no longer reflects what an export would do.
+        self.stale: bool = False
+        self.stale_reason: str = ""
+
+    def reload_reference_data(self) -> None:
+        self.cfg = load_config(self.config_path)
+        self.catalog = ChannelCatalog.load(self.cfg.path(self.cfg.data.channel_catalog))
+        self.defaults = DefaultAssignments.load(self.cfg.path(self.cfg.data.channels_csv))
+        self.stations.register_with(self.catalog)
+
+    def mark_stale(self, reason: str) -> None:
+        if self.result is not None:
+            self.stale = True
+            self.stale_reason = reason
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.cfg.plex.url and self.cfg.plex.token and self.cfg.tmdb.api_key)
+
+
+def _config_path() -> Path:
+    if env := os.getenv("NOSTALGIA_CONFIG"):
+        return Path(env)
+    return PROJECT_ROOT / "config.yaml"
+
+
+state = AppState(_config_path())
+app = FastAPI(title="Nostalgia Line", version=__version__)
+
+
+# -- models ---------------------------------------------------------------
+
+
+class SettingsIn(BaseModel):
+    plex_url: str | None = None
+    plex_token: str | None = None
+    plex_libraries: list[str] | None = None
+    tmdb_api_key: str | None = None
+    routing_mode: str | None = None
+    multi_channel: str | None = None
+    orphan_network: str | None = None
+
+
+class OverrideIn(BaseModel):
+    uid: str
+    channels: list[int] = Field(default_factory=list)
+
+
+class BulkOverrideIn(BaseModel):
+    uids: list[str] = Field(default_factory=list)
+    channels: list[int] = Field(default_factory=list)
+    mode: str = "replace"  # replace | add
+
+
+class NetworkMapIn(BaseModel):
+    network: str
+    channel: int
+
+
+class StationIn(BaseModel):
+    number: int | None = None
+    name: str
+    source_networks: list[str] = Field(default_factory=list)
+    source_channels: list[int] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    mode: str = "claim"
+    enabled: bool = True
+    note: str = ""
+
+
+class ExportIn(BaseModel):
+    include_review: bool = False
+
+
+# -- meta -----------------------------------------------------------------
+
+
+@app.get("/api/status")
+def status() -> dict:
+    return {
+        "version": __version__,
+        "configured": state.configured,
+        "config_path": str(state.config_path),
+        "scanning": bool(state.scan_task and not state.scan_task.done()),
+        "progress": state.progress,
+        "last_error": state.last_error,
+        "last_export": state.last_export,
+        "stale": state.stale,
+        "stale_reason": state.stale_reason,
+        "defaults": {
+            "rows": len(state.defaults),
+            "channels": len(state.catalog),
+            **state.defaults.multi_channel_stats(),
+        },
+        "stations": len(state.stations),
+        "store": state.store.stats(),
+        "stats": state.result.stats() if state.result else None,
+        "diagnostics": state.result.diagnostics() if state.result else None,
+    }
+
+
+@app.get("/api/settings")
+def get_settings() -> dict:
+    cfg = state.cfg
+    return {
+        "plex_url": cfg.plex.url,
+        "plex_token_set": bool(cfg.plex.token),
+        "plex_libraries": cfg.plex.libraries,
+        "tmdb_api_key_set": bool(cfg.tmdb.api_key),
+        "routing_mode": cfg.routing.mode,
+        "multi_channel": cfg.routing.multi_channel,
+        "orphan_network": cfg.routing.orphan_network,
+        "output": {"additions": cfg.output.additions_only, "merged": cfg.output.merged},
+    }
+
+
+@app.post("/api/settings")
+def put_settings(payload: SettingsIn) -> dict:
+    cfg = state.cfg
+    if payload.plex_url is not None:
+        cfg.plex.url = payload.plex_url.strip()
+    if payload.plex_token:
+        cfg.plex.token = payload.plex_token.strip()
+    if payload.plex_libraries is not None:
+        cfg.plex.libraries = [s for s in payload.plex_libraries if s.strip()]
+    if payload.tmdb_api_key:
+        cfg.tmdb.api_key = payload.tmdb_api_key.strip()
+    if payload.routing_mode:
+        cfg.routing.mode = payload.routing_mode
+    if payload.multi_channel:
+        cfg.routing.multi_channel = payload.multi_channel
+    if payload.orphan_network:
+        cfg.routing.orphan_network = payload.orphan_network
+    try:
+        cfg.routing.validate()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_config(cfg, state.config_path)
+    state.mark_stale("routing settings changed")
+    return get_settings()
+
+
+@app.post("/api/test-connection")
+async def test_connection() -> dict:
+    out: dict[str, Any] = {"plex": None, "tmdb": None}
+    try:
+        info = await PlexClient(state.cfg.plex.url, state.cfg.plex.token).ping()
+        sections = await PlexClient(state.cfg.plex.url, state.cfg.plex.token).sections()
+        out["plex"] = {
+            "ok": True,
+            "name": info.get("friendlyName") or "Plex",
+            "version": info.get("version", ""),
+            "sections": [
+                {"title": s.title, "type": s.type} for s in sections if s.type in ("show", "movie")
+            ],
+        }
+    except PlexError as exc:
+        out["plex"] = {"ok": False, "error": str(exc)}
+    try:
+        cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
+        await TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit).verify()
+        out["tmdb"] = {"ok": True, "cached": cache.stats()}
+    except TMDBError as exc:
+        out["tmdb"] = {"ok": False, "error": str(exc)}
+    return out
+
+
+# -- scanning -------------------------------------------------------------
+
+
+@app.post("/api/scan")
+async def scan(include_movies: bool = False) -> dict:
+    if state.scan_task and not state.scan_task.done():
+        raise HTTPException(status_code=409, detail="a scan is already running")
+    if not state.configured:
+        raise HTTPException(
+            status_code=400, detail="Plex URL, Plex token and TMDB key must be set first"
+        )
+    state.last_error = ""
+    state.stale = False
+    state.stale_reason = ""
+    state.reload_reference_data()
+
+    def progress(phase: str, done: int, total: int) -> None:
+        state.progress = {"phase": phase, "done": done, "total": total}
+
+    async def worker() -> None:
+        try:
+            state.result = await run_scan(
+                state.cfg,
+                state.catalog,
+                state.defaults,
+                state.stations,
+                overrides=state.store.overrides,
+                network_overrides=state.store.networks,
+                include_movies=include_movies,
+                progress=progress,
+            )
+            state.progress = {"phase": "done", "done": 1, "total": 1}
+        except asyncio.CancelledError:
+            state.progress = {"phase": "cancelled", "done": 0, "total": 0}
+            state.last_error = "scan cancelled"
+            raise
+        except (PlexError, TMDBError) as exc:
+            state.last_error = str(exc)
+            state.progress = {"phase": "error", "done": 0, "total": 0}
+        except Exception as exc:  # surfaced in the UI rather than lost to a log
+            state.last_error = f"{type(exc).__name__}: {exc}"
+            state.progress = {"phase": "error", "done": 0, "total": 0}
+
+    state.scan_task = asyncio.create_task(worker())
+    return {"started": True}
+
+
+@app.post("/api/scan/cancel")
+async def cancel_scan() -> dict:
+    """Stop a running scan. A large library plus a cold TMDB cache takes a while."""
+    task = state.scan_task
+    if task is None or task.done():
+        raise HTTPException(status_code=409, detail="no scan is running")
+    task.cancel()
+    state.progress = {"phase": "cancelled", "done": 0, "total": 0}
+    state.last_error = "scan cancelled"
+    return {"cancelled": True}
+
+
+@app.get("/api/library")
+def library(
+    status_filter: str = "",
+    section: str = "",
+    q: str = "",
+    channel: int | None = None,
+    network: str = "",
+    rule: str = "",
+    confidence: str = "",
+    review_only: bool = False,
+    sort: str = "title",
+    direction: str = "asc",
+    offset: int = 0,
+    limit: int = 200,
+) -> dict:
+    if state.result is None:
+        return {"total": 0, "items": [], "sections": [], "scanned": False}
+
+    entries = state.result.entries
+    if status_filter:
+        wanted = set(status_filter.split(","))
+        entries = [e for e in entries if e.status in wanted]
+    if section:
+        entries = [e for e in entries if e.section == section]
+    if review_only:
+        entries = [e for e in entries if e.resolution.needs_review]
+    if channel is not None:
+        entries = [e for e in entries if channel in e.channels]
+    if network:
+        entries = [e for e in entries if (e.network or "") == network]
+    if rule:
+        wanted = set(rule.split(","))
+        entries = [
+            e for e in entries if any(a.rule in wanted for a in e.resolution.assignments)
+        ]
+    if confidence:
+        wanted = set(confidence.split(","))
+        entries = [e for e in entries if e.resolution.confidence in wanted]
+    if q:
+        needle = q.casefold()
+        entries = [
+            e
+            for e in entries
+            if needle in e.title.casefold() or needle in (e.network or "").casefold()
+        ]
+
+    def sort_key(entry):
+        if sort == "year":
+            return (entry.year is None, entry.year or 0)
+        if sort == "episodes":
+            return entry.episode_count
+        if sort == "status":
+            return entry.status
+        if sort == "network":
+            return (entry.network or "").casefold()
+        if sort == "channel":
+            channels = entry.channels
+            return channels[0] if channels else 99999
+        if sort == "confidence":
+            from .cascade import CONFIDENCE_ORDER
+
+            return (
+                CONFIDENCE_ORDER.get(entry.resolution.confidence, 9),
+                entry.title.casefold(),
+            )
+        if sort == "seasons":
+            return entry.season_count
+        return entry.title.casefold()
+
+    entries = sorted(entries, key=sort_key, reverse=(direction == "desc"))
+    total = len(entries)
+    window = entries[offset : offset + max(1, min(limit, 1000))]
+    return {
+        "total": total,
+        "offset": offset,
+        "scanned": True,
+        "sections": state.result.sections,
+        "items": [e.to_dict(state.catalog) for e in window],
+    }
+
+
+@app.get("/api/item/{uid:path}")
+def item(uid: str) -> dict:
+    """One library entry. Backs the assign dialog without refetching the table."""
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    entry = next((e for e in state.result.entries if e.uid == uid), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no library item {uid}")
+    return entry.to_dict(state.catalog)
+
+
+@app.get("/api/channels")
+def channels() -> dict:
+    rollup = (
+        state.result.channel_rollup(state.catalog, state.defaults)
+        if state.result
+        else [
+            {
+                "number": c.number,
+                "name": c.name,
+                "category": c.category,
+                "accepts_content": c.accepts_content,
+                "existing": len(state.defaults.titles_on_channel(c.number)),
+                "added": 0,
+                "total": len(state.defaults.titles_on_channel(c.number)),
+                "empty": c.accepts_content and not state.defaults.titles_on_channel(c.number),
+                "thin": False,
+            }
+            for c in state.catalog
+        ]
+    )
+    return {"channels": rollup}
+
+
+@app.get("/api/review")
+def review() -> dict:
+    if state.result is None:
+        return {"total": 0, "items": []}
+    queue = [e for e in state.result.review_queue() if e.uid not in state.store.dismissed]
+    return {
+        "total": len(queue),
+        "items": [e.to_dict(state.catalog) for e in queue],
+    }
+
+
+@app.post("/api/override")
+def override(payload: OverrideIn) -> dict:
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    unknown = [c for c in payload.channels if state.catalog.get(c) is None]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown channels: {unknown}")
+    entry = next((e for e in state.result.entries if e.uid == payload.uid), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no library item {payload.uid}")
+    state.store.set_override(payload.uid, payload.channels)
+    apply_override(entry, payload.channels, state.catalog)
+    return entry.to_dict(state.catalog)
+
+
+@app.delete("/api/override/{uid}")
+def clear_override(uid: str) -> dict:
+    state.store.clear_override(uid)
+    return {"cleared": uid, "note": "re-scan to restore the cascade result"}
+
+
+@app.post("/api/override/bulk")
+def override_bulk(payload: BulkOverrideIn) -> dict:
+    """Assign many titles at once - the whole point of the media-library view."""
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    if payload.mode not in ("replace", "add"):
+        raise HTTPException(status_code=400, detail="mode must be 'replace' or 'add'")
+    unknown = [c for c in payload.channels if state.catalog.get(c) is None]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown channels: {unknown}")
+
+    by_uid = {e.uid: e for e in state.result.entries}
+    missing = [u for u in payload.uids if u not in by_uid]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"{len(missing)} unknown items")
+
+    for uid in payload.uids:
+        entry = by_uid[uid]
+        if payload.mode == "add":
+            channels = sorted({*entry.channels, *payload.channels})
+        else:
+            channels = list(payload.channels)
+        state.store.overrides[uid] = channels
+        apply_override(entry, channels, state.catalog)
+    state.store.save()
+    return {"updated": len(payload.uids), "channels": payload.channels, "mode": payload.mode}
+
+
+@app.post("/api/dismiss/{uid}")
+def dismiss(uid: str) -> dict:
+    state.store.dismiss(uid)
+    return {"dismissed": uid}
+
+
+# -- networks -------------------------------------------------------------
+
+
+def _network_map_with_overrides():
+    network_map = load_network_map(state.cfg.path(state.cfg.data.network_map))
+    network_map.apply_overrides(state.store.networks, state.catalog)
+    return network_map
+
+
+@app.get("/api/networks")
+def networks() -> dict:
+    """Every network in the library, worst-covered first."""
+    if state.result is None:
+        return {"total": 0, "networks": [], "scanned": False, "diagnostics": None}
+    network_map = _network_map_with_overrides()
+    orphan_map = load_orphan_networks(state.cfg.path(state.cfg.data.orphan_networks))
+    rows = state.result.network_rollup(network_map, orphan_map, state.catalog)
+    return {
+        "total": len(rows),
+        "scanned": True,
+        "networks": rows,
+        "diagnostics": state.result.diagnostics(),
+        "unmapped_titles": sum(r["titles"] for r in rows if r["status"] == "unmapped"),
+    }
+
+
+@app.post("/api/networks/map")
+def map_network(payload: NetworkMapIn) -> dict:
+    channel = state.catalog.get(payload.channel)
+    if channel is None:
+        raise HTTPException(status_code=400, detail=f"unknown channel {payload.channel}")
+    if not channel.accepts_content:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{channel.name}' holds no content and cannot be a routing target",
+        )
+    if not payload.network.strip():
+        raise HTTPException(status_code=400, detail="network may not be blank")
+    state.store.map_network(payload.network, channel.number)
+    state.mark_stale(f"'{payload.network}' remapped")
+    return {
+        "network": payload.network,
+        "channel": channel.number,
+        "channel_name": channel.name,
+        "note": "re-scan to apply this to the library",
+    }
+
+
+@app.delete("/api/networks/map/{network:path}")
+def unmap_network(network: str) -> dict:
+    if not state.store.unmap_network(network):
+        raise HTTPException(status_code=404, detail=f"'{network}' is not custom-mapped")
+    state.mark_stale(f"'{network}' mapping cleared")
+    return {"unmapped": network}
+
+
+# -- custom stations ------------------------------------------------------
+
+
+@app.get("/api/stations")
+def get_stations() -> dict:
+    return {
+        "stations": [s.to_dict() for s in state.stations],
+        "problems": state.stations.validate_against(state.catalog),
+        "next_number": state.stations.next_number(),
+        "band_start": CUSTOM_BAND_START,
+        "known_networks": sorted(
+            {n for n in load_network_map(state.cfg.path(state.cfg.data.network_map))}
+            | {n for n in load_orphan_networks(state.cfg.path(state.cfg.data.orphan_networks))}
+        ),
+    }
+
+
+@app.post("/api/stations")
+def put_station(payload: StationIn) -> dict:
+    number = payload.number or state.stations.next_number()
+    stock = state.catalog.get(number)
+    if stock is not None and stock.category != "custom":
+        raise HTTPException(
+            status_code=400,
+            detail=f"channel {number} is the stock channel '{stock.name}'. Pick another number.",
+        )
+    try:
+        station = CustomStation(
+            number=number,
+            name=payload.name,
+            source_networks=payload.source_networks,
+            source_channels=payload.source_channels,
+            keywords=payload.keywords,
+            mode=payload.mode,
+            enabled=payload.enabled,
+            note=payload.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state.stations.upsert(station)
+    state.stations.save(state.cfg.path("stations.json"))
+    state.stations.register_with(state.catalog)
+    state.mark_stale(f"custom station '{station.name}' changed")
+    return station.to_dict()
+
+
+@app.delete("/api/stations/{number}")
+def delete_station(number: int) -> dict:
+    if not state.stations.remove(number):
+        raise HTTPException(status_code=404, detail=f"no custom station {number}")
+    state.stations.save(state.cfg.path("stations.json"))
+    state.catalog.remove(number)
+    state.mark_stale(f"custom station {number} deleted")
+    return {"deleted": number}
+
+
+# -- export ---------------------------------------------------------------
+
+
+@app.get("/api/export/preview")
+def export_preview(include_review: bool = False) -> dict:
+    """What an export would write, without writing it."""
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    rows, secondary, skipped = build_addition_rows(
+        state.result, state.catalog, state.defaults, include_review=include_review
+    )
+    per_channel: dict[int, int] = {}
+    for row in rows:
+        per_channel[row.channel_number] = per_channel.get(row.channel_number, 0) + 1
+    return {
+        "additions": len(rows),
+        "secondary_rows": secondary,
+        "skipped_review": skipped,
+        "original_rows": len(state.defaults),
+        "merged_rows": len(state.defaults) + len(rows),
+        "include_review": include_review,
+        "top_channels": [
+            {"number": n, "name": state.catalog.name_of(n), "rows": c}
+            for n, c in sorted(per_channel.items(), key=lambda kv: -kv[1])[:10]
+        ],
+        "sample": [
+            {
+                "channel_number": r.channel_number,
+                "channel_name": r.channel_name,
+                "title": r.title,
+                "release_year": r.release_year,
+            }
+            for r in rows[:10]
+        ],
+    }
+
+
+@app.post("/api/export")
+def export_csv(payload: ExportIn) -> dict:
+    if state.result is None:
+        raise HTTPException(status_code=400, detail="run a scan first")
+    report = run_export(
+        state.result,
+        state.catalog,
+        state.defaults,
+        state.cfg.path(state.cfg.output.additions_only),
+        state.cfg.path(state.cfg.output.merged),
+        include_review=payload.include_review,
+    )
+    state.last_export = report.to_dict()
+    return state.last_export
+
+
+@app.post("/api/channels-file")
+async def upload_channels_file(request: Request) -> dict:
+    """Replace the default assignments with the user's own NostalgiaTV export.
+
+    Sent as a raw text/csv body so the app needs no multipart dependency. The
+    incoming file is fully validated before anything on disk is touched, and the
+    file being replaced is backed up first.
+    """
+    raw = (await request.body()).decode("utf-8-sig", errors="replace")
+    if not raw.strip():
+        raise HTTPException(status_code=400, detail="empty upload")
+
+    target = state.cfg.path(state.cfg.data.channels_csv)
+    scratch = target.with_suffix(".incoming")
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    scratch.write_text(raw, encoding="utf-8")
+    try:
+        candidate = DefaultAssignments.load(scratch)
+    except (ValueError, KeyError) as exc:
+        scratch.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"not a valid channels.csv: {exc}") from exc
+    if not len(candidate):
+        scratch.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="that file has a header but no rows")
+
+    previous = len(state.defaults)
+    backup = ""
+    if target.exists():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup_path = target.with_name(f"{target.stem}.{stamp}.bak{target.suffix}")
+        backup_path.write_bytes(target.read_bytes())
+        backup = str(backup_path)
+    scratch.replace(target)
+
+    state.defaults = DefaultAssignments.load(target)
+    state.result = None  # the old scan was diffed against the old file
+    return {
+        "rows": len(state.defaults),
+        "previous_rows": previous,
+        "channels": len({r.channel_number for r in state.defaults.rows}),
+        "backup": backup,
+        "note": "re-scan to diff your library against the new file",
+        **state.defaults.multi_channel_stats(),
+    }
+
+
+@app.get("/api/download/{which}")
+def download(which: str):
+    if which not in ("additions", "merged"):
+        raise HTTPException(status_code=404, detail="unknown file")
+    name = (
+        state.cfg.output.additions_only if which == "additions" else state.cfg.output.merged
+    )
+    path = state.cfg.path(name)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="export it first")
+    return FileResponse(path, media_type="text/csv", filename=Path(name).name)
+
+
+# -- static ---------------------------------------------------------------
+
+if WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+else:  # pragma: no cover
+
+    @app.get("/")
+    def missing_ui() -> JSONResponse:
+        return JSONResponse({"error": f"web assets not found at {WEB_DIR}"}, status_code=500)
