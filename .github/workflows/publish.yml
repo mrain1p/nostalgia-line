@@ -1,14 +1,13 @@
 name: Publish image
 
-# Images are published from `dev` only. `main` is the stable branch and does not
-# build - nothing reaches users until it is merged and released deliberately.
-#
-# Nothing is pushed until the test suite and the container check both pass. An
-# earlier revision ran these in parallel and shipped an image whose PUID handling
-# was broken.
+# dev publishes :dev, main publishes :latest, a tag publishes its version.
+# Nothing is pushed until the test suite and the container check both pass - an
+# earlier revision ran those in parallel and shipped an image whose PUID
+# handling was broken.
 on:
   push:
-    branches: [dev]
+    branches: [dev, main]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -51,7 +50,10 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=dev
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
       - name: Build and push

@@ -81,9 +81,8 @@ curl -O https://raw.githubusercontent.com/mrain1p/nostalgia-line/main/docker-com
 docker compose pull && docker compose up -d
 ```
 
-> **Tags:** `:dev` is the only published tag today. `main` is the stable branch
-> and deliberately does not build, so `:latest` does not exist yet. Pin to a
-> commit with `:sha-<short>` if you want to stay put across `dev` pushes.
+> **Tags:** `:latest` tracks `main`, `:dev` tracks `dev`, and `:v1.0.0` pins a
+> release. Use `:latest` unless you want the bleeding edge.
 
 Then open <http://localhost:8777> and fill in the Settings tab. Everything —
 Plex URL, token, TMDB key, routing mode, custom stations — is configured in the
