@@ -7,7 +7,7 @@ CONFIG_DIR=/config
 DATA_DIR="$CONFIG_DIR/data"
 CONFIG_FILE="${NOSTALGIA_CONFIG:-$CONFIG_DIR/config.yaml}"
 
-mkdir -p "$DATA_DIR" "$CONFIG_DIR/exports" "$CONFIG_DIR/cache"
+mkdir -p "$DATA_DIR" "$CONFIG_DIR/exports" "$CONFIG_DIR/cache" "$CONFIG_DIR/logos"
 
 # Seed the reference data on first run only. A user who edits channels.csv - or
 # drops in their own NostalgiaTV export - keeps their copy forever after.

@@ -5,6 +5,21 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
 ));
+const posterUrl = (path, size = 'w185') =>
+  path ? `/api/poster?path=${encodeURIComponent(path)}&size=${size}` : '';
+const logoUrl = (number) => `/api/channel-logo/${number}`;
+
+/** "12 minutes ago" — provenance is only useful if it reads at a glance. */
+function ago(epochSeconds) {
+  if (!epochSeconds) return 'never';
+  const secs = Math.max(0, Date.now() / 1000 - epochSeconds);
+  const steps = [[31536000, 'y'], [2592000, 'mo'], [86400, 'd'], [3600, 'h'], [60, 'm']];
+  for (const [size, label] of steps) {
+    if (secs >= size) return `${Math.floor(secs / size)}${label} ago`;
+  }
+  return 'just now';
+}
+
 const splitList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean);
 
 const state = {
@@ -41,10 +56,10 @@ let bannerHoldUntil = 0;
 function banner(message, kind = '', autoHide = 0) {
   const el = $('banner');
   clearTimeout(bannerTimer);
-  if (!message) { el.classList.add('hidden'); bannerHoldUntil = 0; return; }
+  if (!message) { el.classList.add('is-hidden'); bannerHoldUntil = 0; return; }
   el.className = `banner ${kind}`;
   el.textContent = message;
-  el.classList.remove('hidden');
+  el.classList.remove('is-hidden');
   bannerHoldUntil = autoHide ? Date.now() + autoHide : 0;
   if (autoHide) bannerTimer = setTimeout(() => banner(''), autoHide);
 }
@@ -66,10 +81,10 @@ const loaders = {
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
-    tab.classList.add('active');
-    $(`tab-${tab.dataset.tab}`).classList.add('active');
+    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('is-active'));
+    document.querySelectorAll('.panel').forEach((p) => p.classList.remove('is-active'));
+    tab.classList.add('is-active');
+    $(`tab-${tab.dataset.tab}`).classList.add('is-active');
     loaders[tab.dataset.tab]?.();
   });
 });
@@ -88,20 +103,20 @@ async function refreshStatus() {
   const { done = 0, total = 0 } = status.progress ?? {};
 
   if (status.scanning) {
-    pill.className = 'pill pill-run';
+    pill.dataset.state = 'run';
     pill.textContent = total ? `${phase} ${done}/${total}` : phase;
     $('scan-btn').disabled = true;
   } else {
     $('scan-btn').disabled = false;
     if (status.last_error) {
-      pill.className = 'pill pill-err';
+      pill.dataset.state = 'err';
       pill.textContent = 'error';
       standingBanner(status.last_error, 'err');
     } else if (status.stats) {
-      pill.className = 'pill pill-ok';
+      pill.dataset.state = 'ok';
       pill.textContent = 'ready';
     } else {
-      pill.className = 'pill pill-idle';
+      pill.dataset.state = 'idle';
       pill.textContent = 'idle';
     }
     if (state.poll) {
@@ -118,12 +133,12 @@ async function refreshStatus() {
   if (!status.configured) {
     standingBanner('Set your Plex URL, Plex token and TMDB key on the Settings tab to begin.');
   }
-  $('cancel-btn').classList.toggle('hidden', !status.scanning);
+  $('cancel-btn').classList.toggle('is-hidden', !status.scanning);
 
   // A routing input changed after the scan ran, so what is on screen no longer
   // matches what an export would produce.
   const stale = status.stale && !status.scanning;
-  $('stale-bar').classList.toggle('hidden', !stale);
+  $('stale-bar').classList.toggle('is-hidden', !stale);
   if (stale) {
     $('stale-text').textContent =
       `These results are out of date — ${status.stale_reason}. Re-scan to apply it.`;
@@ -131,13 +146,42 @@ async function refreshStatus() {
 
   renderStats(status.stats);
   renderDiagnostics(status.diagnostics);
+  renderProvenance(status);
   $('tab-library-count').textContent = status.stats ? status.stats.total : '';
   $('tab-review-count').textContent = status.stats ? status.stats.needs_review : '';
   if (status.defaults) {
-    $('defaults-summary').textContent =
-      `Currently loaded: ${status.defaults.rows} assignments across ` +
-      `${status.defaults.titles} titles, ${status.defaults.sanctioned_pairs} sanctioned pairings.`;
+    $('defaults-summary').innerHTML = [
+      ['Assignments', status.defaults.rows],
+      ['Distinct titles', status.defaults.titles],
+      ['On 2+ channels', status.defaults.multi_channel_titles],
+      ['Sanctioned pairings', status.defaults.sanctioned_pairs],
+      ['Imported', status.baseline?.at ? ago(status.baseline.at) : 'shipped defaults'],
+    ].map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
   }
+}
+
+/** What is loaded, how far it has drifted, and when it last left the app. */
+function renderProvenance(status) {
+  const el = $('provenance');
+  if (!status.stats) { el.innerHTML = ''; return; }
+  const pending = status.pending || {};
+  const changed = (pending.additions || 0) + (pending.overrides || 0);
+  const sep = '<span class="prov-sep"></span>';
+
+  const parts = [
+    `<span class="prov-item">Lineup <b>${esc(status.defaults.rows)}</b> rows${
+      status.baseline?.at ? ` · imported ${esc(ago(status.baseline.at))}` : ' · shipped defaults'}</span>`,
+    `<span class="prov-item ${changed ? 'is-dirty' : ''}">${
+      changed ? `<b>${changed}</b> change${changed === 1 ? '' : 's'} pending` : 'No pending changes'}</span>`,
+  ];
+  if (pending.held_for_review) {
+    parts.push(`<span class="prov-item">${pending.held_for_review} held for review</span>`);
+  }
+  parts.push(`<span class="prov-item">Last export <b>${esc(ago(status.last_export_at))}</b></span>`);
+  if (status.posters?.count) {
+    parts.push(`<span class="prov-item">${status.posters.count} posters cached</span>`);
+  }
+  el.innerHTML = parts.join(sep);
 }
 
 function renderStats(stats) {
@@ -168,7 +212,7 @@ function renderDiagnostics(diag) {
     parts.push(`<strong>${diag.no_network}</strong> show(s) have a TMDB record with no network
       listed. e.g. ${diag.no_network_samples.map(esc).join(', ')}`);
   }
-  el.innerHTML = `<div class="banner inline">${parts.join('<br><br>')}</div>`;
+  el.innerHTML = `<div class="notice-block">${parts.join('<br><br>')}</div>`;
 }
 
 /* ── scan ──────────────────────────────────────────────────── */
@@ -221,13 +265,13 @@ async function loadLibrary() {
   if (!data.scanned) {
     body.innerHTML = '';
     $('library-empty').textContent = 'Run a scan to populate the library.';
-    $('library-empty').classList.remove('hidden');
+    $('library-empty').classList.remove('is-hidden');
   } else if (!data.items.length) {
     body.innerHTML = '';
     $('library-empty').textContent = 'No titles match these filters.';
-    $('library-empty').classList.remove('hidden');
+    $('library-empty').classList.remove('is-hidden');
   } else {
-    $('library-empty').classList.add('hidden');
+    $('library-empty').classList.add('is-hidden');
     body.innerHTML = data.items.map(rowHtml).join('');
   }
 
@@ -254,8 +298,8 @@ async function loadLibrary() {
 
 function renderActiveFilter() {
   const el = $('active-filter');
-  if (!state.networkFilter) { el.classList.add('hidden'); return; }
-  el.classList.remove('hidden');
+  if (!state.networkFilter) { el.classList.add('is-hidden'); return; }
+  el.classList.remove('is-hidden');
   el.innerHTML = `Showing titles from <strong>${esc(state.networkFilter)}</strong>
     <button class="btn-link" id="drop-network-filter">clear</button>`;
   $('drop-network-filter').addEventListener('click', () => {
@@ -275,6 +319,16 @@ function channelChips(item) {
   }).join('');
 }
 
+function artCell(item) {
+  if (!$('show-posters').checked) return '';
+  // lazy so a 500-row page does not fire 500 requests up front; the server
+  // caches each poster to disk on first hit, so scrolling stays cheap.
+  return item.poster_path
+    ? `<img class="art" loading="lazy" decoding="async" alt=""
+         src="${esc(posterUrl(item.poster_path, 'w92'))}">`
+    : '<div class="art"></div>';
+}
+
 function rowHtml(item) {
   const why = (item.assignments || []).map((a) => a.reason).join('; ') || item.review_reason || '';
   const flag = item.needs_review ? `<span class="flag" title="${esc(item.review_reason)}">⚑</span>` : '';
@@ -283,8 +337,9 @@ function rowHtml(item) {
   const net = item.network
     ? `<button class="btn-link" data-network="${esc(item.network)}">${esc(item.network)}</button>`
     : '';
-  return `<tr class="${checked ? 'row-selected' : ''}">
-    <td class="tick"><input type="checkbox" data-uid="${esc(item.uid)}" ${checked}></td>
+  return `<tr class="${checked ? 'is-selected' : ''}">
+    <td class="col-tick"><input type="checkbox" class="box" data-uid="${esc(item.uid)}" ${checked}></td>
+    <td class="col-art">${artCell(item)}</td>
     <td class="title-cell">${esc(item.title)}${flag}${over}</td>
     <td class="num col-year">${item.year ?? ''}</td>
     <td class="num col-sn">${item.season_count || ''}</td>
@@ -312,6 +367,7 @@ $('q').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { state.offset = 0; loadLibrary(); }, 220);
 });
+$('show-posters').addEventListener('change', loadLibrary);
 ['status-filter', 'section-filter', 'review-filter', 'confidence-filter'].forEach((id) => {
   $(id).addEventListener('change', () => { state.offset = 0; loadLibrary(); });
 });
@@ -334,7 +390,7 @@ $('library-body').addEventListener('change', (event) => {
   const uid = event.target.dataset?.uid;
   if (!uid) return;
   if (event.target.checked) state.selected.add(uid); else state.selected.delete(uid);
-  event.target.closest('tr')?.classList.toggle('row-selected', event.target.checked);
+  event.target.closest('tr')?.classList.toggle('is-selected', event.target.checked);
   syncSelectionUi();
 });
 
@@ -344,14 +400,14 @@ $('check-page').addEventListener('change', (event) => {
   });
   document.querySelectorAll('#library-body input[data-uid]').forEach((box) => {
     box.checked = event.target.checked;
-    box.closest('tr')?.classList.toggle('row-selected', event.target.checked);
+    box.closest('tr')?.classList.toggle('is-selected', event.target.checked);
   });
   syncSelectionUi();
 });
 
 function syncSelectionUi() {
   const n = state.selected.size;
-  $('bulk-bar').classList.toggle('hidden', n === 0);
+  $('bulk-bar').classList.toggle('is-hidden', n === 0);
   $('bulk-count').textContent = `${n} selected`;
   const pageUids = state.lastItems.map((i) => i.uid);
   $('check-page').checked = pageUids.length > 0 && pageUids.every((u) => state.selected.has(u));
@@ -360,7 +416,7 @@ function syncSelectionUi() {
 $('bulk-clear').addEventListener('click', () => {
   state.selected.clear();
   document.querySelectorAll('#library-body input[data-uid]').forEach((b) => { b.checked = false; });
-  document.querySelectorAll('#library-body tr').forEach((r) => r.classList.remove('row-selected'));
+  document.querySelectorAll('#library-body tr').forEach((r) => r.classList.remove('is-selected'));
   syncSelectionUi();
 });
 
@@ -376,7 +432,7 @@ $('bulk-select-all').addEventListener('click', async () => {
   }
   all.forEach((uid) => state.selected.add(uid));
   document.querySelectorAll('#library-body input[data-uid]').forEach((b) => {
-    b.checked = true; b.closest('tr')?.classList.add('row-selected');
+    b.checked = true; b.closest('tr')?.classList.add('is-selected');
   });
   syncSelectionUi();
   banner(`${all.length} titles selected.`, 'ok', 2500);
@@ -502,13 +558,18 @@ async function loadReview() {
   let data;
   try { data = await api('/api/review'); } catch { return; }
   const list = $('review-list');
-  $('review-empty').classList.toggle('hidden', data.total > 0);
+  $('review-empty').classList.toggle('is-hidden', data.total > 0);
   list.innerHTML = data.items.map((item) => `
-    <div class="card flagged">
+    <div class="card review">
+      ${item.poster_path
+        ? `<img class="review-art" loading="lazy" decoding="async" alt=""
+             src="${esc(posterUrl(item.poster_path, 'w154'))}">`
+        : '<div class="review-art"></div>'}
+      <div class="review-body">
       <h4>${esc(item.title)}</h4>
-      <div class="meta">${item.year ?? '—'} · ${item.episode_count || 0} eps${item.network ? ` · ${esc(item.network)}` : ''}</div>
-      <div class="reason">⚑ ${esc(item.review_reason)}</div>
-      ${item.overview ? `<div class="overview">${esc(item.overview)}</div>` : ''}
+      <div class="review-meta">${item.year ?? '—'} · ${item.episode_count || 0} eps${item.network ? ` · ${esc(item.network)}` : ''}</div>
+      <div class="review-reason">⚑ ${esc(item.review_reason)}</div>
+      ${item.overview ? `<div class="review-overview">${esc(item.overview)}</div>` : ''}
       <div>${channelChips(item)}</div>
       <div class="card-actions">
         <button class="btn btn-small" data-assign="${esc(item.uid)}">Assign</button>
@@ -516,6 +577,7 @@ async function loadReview() {
         ${item.network ? `<button class="btn btn-small" data-network="${esc(item.network)}">All from ${esc(item.network)}</button>` : ''}
         ${item.tmdb_id ? `<a class="btn btn-small" target="_blank" rel="noopener"
            href="https://www.themoviedb.org/tv/${item.tmdb_id}">TMDB ↗</a>` : ''}
+      </div>
       </div>
     </div>`).join('');
 
@@ -536,7 +598,7 @@ async function loadNetworks() {
   if (!data) return;
   networkRows = data.networks;
   $('tab-networks-count').textContent = data.total || '';
-  $('network-empty').classList.toggle('hidden', data.scanned && data.total > 0);
+  $('network-empty').classList.toggle('is-hidden', data.scanned && data.total > 0);
 
   if (data.scanned) {
     const unmapped = data.networks.filter((n) => n.status === 'unmapped').length;
@@ -643,15 +705,17 @@ function renderChannels(channels) {
         : c.thin ? '<span class="tag tag-thin">thin</span>' : '';
       return `<tr>
         <td class="num">${c.number}</td>
-        <td>${esc(c.name)} ${tag}</td>
-        <td>${esc(c.category)}${c.accepts_content ? '' : ' · no content'}</td>
+        <td class="col-art"><img class="art-logo" loading="lazy" decoding="async"
+          alt="" src="${esc(logoUrl(c.number))}"></td>
+        <td class="title-cell">${esc(c.name)} ${tag}</td>
+        <td class="col-cat">${esc(c.category)}${c.accepts_content ? '' : ' · no content'}</td>
         <td class="num">${c.existing}</td>
         <td class="num">${c.added ? `+${c.added}` : ''}</td>
         <td class="num">${c.total}</td>
         <td><div class="bar"><span class="${hot}" style="width:${pct}%"></span></div></td>
       </tr>`;
     }).join('');
-  $('channel-body').innerHTML = rows || '<tr><td colspan="7" class="empty">Nothing matches.</td></tr>';
+  $('channel-body').innerHTML = rows || '<tr><td colspan="8" class="empty">Nothing matches.</td></tr>';
 }
 
 ['hide-nocontent', 'only-problem'].forEach((id) => $(id).addEventListener('change', loadChannels));
@@ -662,7 +726,7 @@ async function loadStations() {
   if (!data) return;
 
   $('station-problems').innerHTML = data.problems.length
-    ? `<div class="banner inline">${data.problems.map(esc).join('<br>')}</div>`
+    ? `<div class="notice-block">${data.problems.map(esc).join('<br>')}</div>`
     : '';
   $('st-number').placeholder = `auto (${data.next_number})`;
 
@@ -710,8 +774,8 @@ $('station-form').addEventListener('submit', async (event) => {
 /* ── settings ──────────────────────────────────────────────── */
 function syncSourceFields() {
   const source = $('source').value;
-  $('source-plex').classList.toggle('hidden', source !== 'plex');
-  $('source-jellyfin').classList.toggle('hidden', source !== 'jellyfin');
+  $('source-plex').classList.toggle('is-hidden', source !== 'plex');
+  $('source-jellyfin').classList.toggle('is-hidden', source !== 'jellyfin');
 }
 
 $('source').addEventListener('change', syncSourceFields);
@@ -733,8 +797,7 @@ async function loadSettings() {
   $('orphan-network').value = settings.orphan_network;
 }
 
-$('settings-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
+$('save-settings').addEventListener('click', async () => {
   const payload = {
     source: $('source').value,
     plex_url: $('plex-url').value.trim(),
@@ -760,24 +823,61 @@ $('settings-form').addEventListener('submit', async (event) => {
   }
 });
 
-$('test-btn').addEventListener('click', async () => {
-  $('test-result').innerHTML = '<p class="hint">Testing…</p>';
+function setBadge(id, state, text) {
+  const el = $(id);
+  el.dataset.state = state;
+  el.textContent = text;
+}
+
+$('test-server').addEventListener('click', async () => {
+  setBadge('server-badge', 'testing', 'testing…');
+  $('server-result').innerHTML = '';
   try {
-    const result = await api('/api/test-connection', { method: 'POST' });
-    const srv = result.server;
-    const label = srv.kind === 'jellyfin' ? 'Jellyfin' : 'Plex';
-    const plex = srv.ok
-      ? `<p class="result-ok">✓ ${esc(label)}: ${esc(srv.name)} ${esc(srv.version)}</p>
-         <ul>${srv.sections.map((s) => `<li>${esc(s.title)} (${esc(s.type)})</li>`).join('')}</ul>`
-      : `<p class="result-err">✗ ${esc(label)}: ${esc(srv.error)}</p>`;
-    const tmdb = result.tmdb.ok
-      ? `<p class="result-ok">✓ TMDB key accepted (${result.tmdb.cached.series || 0} series cached)</p>`
-      : `<p class="result-err">✗ TMDB: ${esc(result.tmdb.error)}</p>`;
-    $('test-result').innerHTML = `<div class="result-block">${plex}${tmdb}</div>`;
+    const r = await api('/api/test/server', { method: 'POST' });
+    if (r.ok) {
+      setBadge('server-badge', 'ok', 'connected');
+      $('server-result').innerHTML =
+        `<p class="result-ok">✓ ${esc(r.name)} ${esc(r.version)} — ${esc(r.detail)}</p>
+         <ul>${r.sections.map((x) => `<li>${esc(x.title)} <span class="muted">(${esc(x.type)})</span></li>`).join('')}</ul>`;
+    } else {
+      setBadge('server-badge', 'err', 'failed');
+      $('server-result').innerHTML = `<p class="result-err">✗ ${esc(r.error)}</p>`;
+    }
   } catch (err) {
-    $('test-result').innerHTML = `<p class="result-err">${esc(err.message)}</p>`;
+    setBadge('server-badge', 'err', 'failed');
+    $('server-result').innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
   }
 });
+
+$('test-tmdb').addEventListener('click', async () => {
+  setBadge('tmdb-badge', 'testing', 'testing…');
+  $('tmdb-result').innerHTML = '';
+  try {
+    const r = await api('/api/test/tmdb', { method: 'POST' });
+    if (r.ok) {
+      setBadge('tmdb-badge', 'ok', 'key valid');
+      $('tmdb-result').innerHTML = `<p class="result-ok">✓ Key accepted — ${esc(r.detail)}</p>`;
+    } else {
+      setBadge('tmdb-badge', 'err', 'failed');
+      $('tmdb-result').innerHTML = `<p class="result-err">✗ ${esc(r.error)}</p>`;
+    }
+  } catch (err) {
+    setBadge('tmdb-badge', 'err', 'failed');
+    $('tmdb-result').innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
+  }
+});
+
+$('clear-posters').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/posters/clear', { method: 'POST' });
+    banner(`Cleared ${r.removed} cached poster(s).`, 'ok', 2500);
+    refreshStatus();
+  } catch (err) { banner(err.message, 'err'); }
+});
+
+// Both Import buttons (header and Settings) drive the one hidden file input.
+$('import-btn').addEventListener('click', () => $('channels-file').click());
+$('import-btn-2').addEventListener('click', () => $('channels-file').click());
 
 $('channels-file').addEventListener('change', async (event) => {
   const file = event.target.files[0];
@@ -803,7 +903,7 @@ $('channels-file').addEventListener('change', async (event) => {
 
 /* ── export ────────────────────────────────────────────────── */
 $('export-btn').addEventListener('click', async () => {
-  $('export-downloads').classList.add('hidden');
+  $('export-downloads').classList.add('is-hidden');
   await refreshExportPreview();
   $('export-dialog').showModal();
 });
@@ -842,7 +942,7 @@ $('export-form').addEventListener('submit', async (event) => {
     $('export-preview').innerHTML = `<p class="result-ok">✓ Wrote ${report.additions} new rows.
       Merged file has ${report.merged_rows} rows.</p>
       <p class="hint">${esc(report.merged_path)}</p>`;
-    $('export-downloads').classList.remove('hidden');
+    $('export-downloads').classList.remove('is-hidden');
   } catch (err) {
     banner(err.message, 'err');
   }

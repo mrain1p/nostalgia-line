@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -19,6 +21,7 @@ from .config import SOURCES, Config, load_config, save_config
 from .export import build_addition_rows
 from .export import export as run_export
 from .pipeline import ScanResult, apply_override, run_scan
+from .posters import DEFAULT_SIZE, PosterCache
 from .media import SourceError
 from .sources import build_source, missing_credential_message, source_is_configured
 from .stations import CUSTOM_BAND_START, CustomStation, StationBook
@@ -41,6 +44,7 @@ class AppState:
         self.stations = StationBook.load(self.cfg.path("stations.json"))
         self.stations.register_with(self.catalog)
         self.store = Store(self.cfg.path(self.cfg.data.state_file))
+        self.posters = PosterCache(self.cfg.path(self.cfg.data.cache_dir) / "posters")
         self.result: ScanResult | None = None
         self.scan_task: asyncio.Task | None = None
         self.progress: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0}
@@ -148,8 +152,24 @@ def status() -> dict:
         },
         "stations": len(state.stations),
         "store": state.store.stats(),
+        "baseline": state.store.baseline,
+        "last_export_at": state.store.last_export.get("at"),
+        "pending": _pending_changes(),
+        "posters": state.posters.stats(),
         "stats": state.result.stats() if state.result else None,
         "diagnostics": state.result.diagnostics() if state.result else None,
+    }
+
+
+def _pending_changes() -> dict:
+    """How far the current results have drifted from the loaded channels.csv."""
+    if state.result is None:
+        return {"additions": 0, "held_for_review": 0, "overrides": len(state.store.overrides)}
+    rows, _, skipped = build_addition_rows(state.result, state.catalog, state.defaults)
+    return {
+        "additions": len(rows),
+        "held_for_review": skipped,
+        "overrides": len(state.store.overrides),
     }
 
 
@@ -208,31 +228,39 @@ def put_settings(payload: SettingsIn) -> dict:
     return get_settings()
 
 
-@app.post("/api/test-connection")
-async def test_connection() -> dict:
-    out: dict[str, Any] = {"source": state.cfg.source, "server": None, "tmdb": None}
+@app.post("/api/test/server")
+async def test_server() -> dict:
+    """Test only the media server, so a bad TMDB key cannot mask a good Plex."""
     try:
         source = build_source(state.cfg)
         info = await source.ping()
         sections = await source.sections()
-        out["server"] = {
+        usable = [s for s in sections if s.type in ("show", "movie")]
+        return {
             "ok": True,
             "kind": source.name,
             "name": info.get("friendlyName") or source.name.title(),
             "version": info.get("version", ""),
-            "sections": [
-                {"title": s.title, "type": s.type} for s in sections if s.type in ("show", "movie")
-            ],
+            "sections": [{"title": s.title, "type": s.type} for s in usable],
+            "detail": f"{len(usable)} usable librar{'y' if len(usable) == 1 else 'ies'}",
         }
     except SourceError as exc:
-        out["server"] = {"ok": False, "kind": state.cfg.source, "error": str(exc)}
+        return {"ok": False, "kind": state.cfg.source, "error": str(exc)}
+
+
+@app.post("/api/test/tmdb")
+async def test_tmdb() -> dict:
     try:
         cache = TMDBCache(state.cfg.path(state.cfg.data.cache_dir))
         await TMDBClient(state.cfg.tmdb.api_key, cache, state.cfg.tmdb.rate_limit).verify()
-        out["tmdb"] = {"ok": True, "cached": cache.stats()}
+        cached = cache.stats()
+        return {
+            "ok": True,
+            "cached": cached,
+            "detail": f"{cached.get('series', 0)} series cached",
+        }
     except TMDBError as exc:
-        out["tmdb"] = {"ok": False, "error": str(exc)}
-    return out
+        return {"ok": False, "error": str(exc)}
 
 
 # -- scanning -------------------------------------------------------------
@@ -408,6 +436,82 @@ def channels() -> dict:
         ]
     )
     return {"channels": rollup}
+
+
+@app.get("/api/poster")
+async def poster(path: str, size: str = DEFAULT_SIZE):
+    """Serve a TMDB poster from disk, fetching it once on the first request.
+
+    Cached under /config/cache/posters. TMDB poster paths are content-addressed,
+    so the response is safe to cache hard in the browser as well.
+    """
+    if not PosterCache.valid(path):
+        raise HTTPException(status_code=400, detail="not a TMDB poster path")
+    local = await state.posters.fetch(path, size)
+    if local is None:
+        raise HTTPException(status_code=404, detail="poster unavailable")
+    return FileResponse(
+        local,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+    )
+
+
+@app.post("/api/posters/clear")
+def clear_posters() -> dict:
+    return {"removed": state.posters.clear()}
+
+
+@app.get("/api/channel-logo/{number}")
+def channel_logo(number: int):
+    """A channel's logo.
+
+    Looks in /config/logos for a file named after the channel number, or after
+    its name in NostalgiaTV's own `logo_<name>.png` convention - so mounting an
+    existing logo folder read-only just works. Falls back to a generated badge,
+    which means the UI always has something to show.
+    """
+    channel = state.catalog.get(number)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"no channel {number}")
+
+    slug = re.sub(r"[^a-z0-9]+", "", channel.name.lower())
+    directory = state.cfg.path("logos")
+    for stem in (str(number), f"logo_{slug}", slug, channel.app_key, f"logo_{channel.app_key}"):
+        for suffix in (".png", ".webp", ".svg", ".jpg", ".jpeg"):
+            candidate = directory / f"{stem}{suffix}"
+            if candidate.exists():
+                return FileResponse(
+                    candidate, headers={"Cache-Control": "public, max-age=86400"}
+                )
+
+    return Response(
+        content=_logo_placeholder(channel),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# Deterministic hue per channel so a logo-less lineup still reads as distinct.
+_LOGO_PALETTE = [
+    ("#1f3a5f", "#8ab4f8"), ("#3b2f5e", "#c5a3ff"), ("#14453d", "#5fd0bc"),
+    ("#5a3320", "#ffab70"), ("#4a1f3d", "#ff9ecb"), ("#1e4620", "#8fd694"),
+    ("#4a4520", "#e8d16b"), ("#402020", "#ff9b9b"),
+]
+
+
+def _logo_placeholder(channel) -> str:
+    bg, fg = _LOGO_PALETTE[channel.number % len(_LOGO_PALETTE)]
+    initials = "".join(w[0] for w in re.findall(r"[A-Za-z0-9]+", channel.name))[:3].upper()
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 40" width="64" height="40">'
+        f'<rect width="64" height="40" rx="6" fill="{bg}"/>'
+        f'<text x="32" y="19" font-family="ui-monospace,monospace" font-size="15" font-weight="700"'
+        f' fill="{fg}" text-anchor="middle">{initials}</text>'
+        f'<text x="32" y="32" font-family="ui-monospace,monospace" font-size="9"'
+        f' fill="{fg}" fill-opacity="0.75" text-anchor="middle">{channel.number}</text>'
+        f"</svg>"
+    )
 
 
 @app.get("/api/review")
@@ -638,6 +742,7 @@ def export_csv(payload: ExportIn) -> dict:
         include_review=payload.include_review,
     )
     state.last_export = report.to_dict()
+    state.store.record_export(state.last_export)
     return state.last_export
 
 
@@ -676,6 +781,12 @@ async def upload_channels_file(request: Request) -> dict:
     scratch.replace(target)
 
     state.defaults = DefaultAssignments.load(target)
+    state.store.record_baseline(
+        rows=len(state.defaults),
+        channels=len({r.channel_number for r in state.defaults.rows}),
+        digest=hashlib.sha256(target.read_bytes()).hexdigest()[:16],
+        filename="channels.csv",
+    )
     state.result = None  # the old scan was diffed against the old file
     return {
         "rows": len(state.defaults),

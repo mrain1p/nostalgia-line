@@ -8,86 +8,116 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📺</text></svg>">
 </head>
 <body>
+
 <header class="topbar">
   <div class="brand">
-    <span class="logo">📺</span>
-    <div>
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="2" y="7" width="20" height="14" rx="2.5"/>
+        <path d="M8 3.5 12 7l4-3.5" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <div class="brand-text">
       <h1>Nostalgia Line</h1>
-      <p class="tagline">Put every show on a channel</p>
+      <p>Put every show on a channel</p>
     </div>
   </div>
+
   <div class="topbar-actions">
-    <span id="scan-state" class="pill pill-idle">idle</span>
-    <button id="cancel-btn" class="btn btn-small hidden">Cancel</button>
+    <span id="scan-state" class="pill" data-state="idle">idle</span>
+    <button id="cancel-btn" class="btn btn-ghost is-hidden">Cancel</button>
+    <div class="btn-group">
+      <button id="import-btn" class="btn" title="Load a channels.csv exported from NostalgiaTV">Import</button>
+      <button id="export-btn" class="btn">Export</button>
+    </div>
     <button id="scan-btn" class="btn btn-primary">Scan library</button>
+    <input type="file" id="channels-file" accept=".csv,text/csv" hidden>
   </div>
 </header>
 
-<div id="banner" class="banner hidden"></div>
-<div id="stale-bar" class="stale-bar hidden">
+<div id="banner" class="banner is-hidden"></div>
+
+<div id="stale-bar" class="notice notice-warn is-hidden">
   <span id="stale-text"></span>
   <button id="stale-rescan" class="btn btn-small">Re-scan now</button>
 </div>
 
+<div class="provenance" id="provenance"></div>
+
 <nav class="tabs" role="tablist">
-  <button class="tab active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
+  <button class="tab is-active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
   <button class="tab" data-tab="review" role="tab">Review <span class="count" id="tab-review-count"></span></button>
   <button class="tab" data-tab="networks" role="tab">Networks <span class="count" id="tab-networks-count"></span></button>
   <button class="tab" data-tab="channels" role="tab">Channels</button>
-  <button class="tab" data-tab="stations" role="tab">Custom stations</button>
+  <button class="tab" data-tab="stations" role="tab">Stations</button>
   <button class="tab" data-tab="settings" role="tab">Settings</button>
 </nav>
 
 <main>
   <!-- ── Library ─────────────────────────────────────────────── -->
-  <section id="tab-library" class="panel active">
+  <section id="tab-library" class="panel is-active">
     <div class="stats" id="stats"></div>
     <div id="diagnostics"></div>
 
     <div class="toolbar">
-      <input id="q" type="search" placeholder="Search title or network…" autocomplete="off">
-      <select id="status-filter">
+      <div class="field-search">
+        <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="9" cy="9" r="6"/><path d="m14 14 4 4" stroke-linecap="round"/>
+        </svg>
+        <input id="q" type="search" placeholder="Search title or network" autocomplete="off">
+      </div>
+      <select id="status-filter" aria-label="Status">
         <option value="">All statuses</option>
-        <option value="unassigned">Unassigned only</option>
-        <option value="assigned">Assigned by Nostalgia Line</option>
-        <option value="already_assigned">Already in NostalgiaTV</option>
+        <option value="unassigned">Unassigned</option>
+        <option value="assigned">Placed by Line</option>
+        <option value="already_assigned">Already assigned</option>
       </select>
-      <select id="confidence-filter">
+      <select id="confidence-filter" aria-label="Confidence">
         <option value="">Any confidence</option>
         <option value="high">High</option>
         <option value="medium">Medium</option>
         <option value="low">Low</option>
         <option value="none">Unplaced</option>
       </select>
-      <select id="section-filter"><option value="">All libraries</option></select>
-      <label class="check"><input type="checkbox" id="review-filter"> Needs review</label>
-      <button id="clear-filters" class="btn btn-small">Clear</button>
-      <span class="spacer"></span>
-      <button id="export-btn" class="btn btn-primary">Export…</button>
+      <select id="section-filter" aria-label="Library"><option value="">All libraries</option></select>
+
+      <label class="switch">
+        <input type="checkbox" id="review-filter">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Needs review</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="show-posters" checked>
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Posters</span>
+      </label>
+
+      <button id="clear-filters" class="btn btn-small btn-ghost">Clear</button>
     </div>
 
-    <div id="active-filter" class="active-filter hidden"></div>
+    <div id="active-filter" class="notice notice-info is-hidden"></div>
 
-    <div id="bulk-bar" class="bulk-bar hidden">
+    <div id="bulk-bar" class="bulk-bar is-hidden">
       <strong id="bulk-count">0 selected</strong>
       <button class="btn btn-small" id="bulk-select-all">Select all matching</button>
       <span class="spacer"></span>
       <button class="btn btn-small" id="bulk-assign">Assign to…</button>
-      <button class="btn btn-small" id="bulk-add">Add a channel…</button>
+      <button class="btn btn-small" id="bulk-add">Add channel…</button>
       <button class="btn btn-small" id="bulk-unassign">Unassign</button>
-      <button class="btn btn-small" id="bulk-clear">Deselect</button>
+      <button class="btn btn-small btn-ghost" id="bulk-clear">Deselect</button>
     </div>
 
     <div class="table-wrap">
       <table id="library-table">
         <thead>
           <tr>
-            <th class="tick"><input type="checkbox" id="check-page" title="Select this page"></th>
+            <th class="col-tick"><input type="checkbox" id="check-page" class="box" title="Select page"></th>
+            <th class="col-art"></th>
             <th data-sort="title" class="sortable">Title</th>
             <th data-sort="year" class="sortable num col-year">Year</th>
             <th data-sort="seasons" class="sortable num col-sn">Sn</th>
             <th data-sort="episodes" class="sortable num col-eps">Eps</th>
-            <th data-sort="network" class="sortable">Network</th>
+            <th data-sort="network" class="sortable col-network">Network</th>
             <th data-sort="channel" class="sortable">Channel</th>
             <th data-sort="confidence" class="sortable col-conf">Conf</th>
             <th data-sort="status" class="sortable">Status</th>
@@ -103,7 +133,7 @@
       <button id="prev" class="btn btn-small">‹ Prev</button>
       <span id="page-info"></span>
       <button id="next" class="btn btn-small">Next ›</button>
-      <select id="page-size">
+      <select id="page-size" aria-label="Rows per page">
         <option value="100">100 / page</option>
         <option value="250">250 / page</option>
         <option value="500">500 / page</option>
@@ -111,12 +141,12 @@
     </div>
   </section>
 
-  <!-- ── Review queue ────────────────────────────────────────── -->
+  <!-- ── Review ──────────────────────────────────────────────── -->
   <section id="tab-review" class="panel">
-    <p class="hint">
+    <p class="lede">
       Low-confidence placements and every orphan network. In the spec's own testing
-      <strong>22 of 32</strong> uncertain guesses were wrong — check these before exporting.
-      Low-confidence rows are held back from the export until you do.
+      <strong>22 of 32</strong> uncertain guesses were wrong — these are held back
+      from the export until you look at them.
     </p>
     <div id="review-list" class="cards"></div>
     <p id="review-empty" class="empty">Nothing to review.</p>
@@ -124,21 +154,29 @@
 
   <!-- ── Networks ────────────────────────────────────────────── -->
   <section id="tab-networks" class="panel">
-    <p class="hint">
-      Where your library's content actually comes from. Mapping one unmapped network
-      places every title on it at once — far less work than deciding them one by one.
-      Worst-covered networks are listed first.
+    <p class="lede">
+      Where your library actually comes from. Mapping one unmapped network places
+      every title on it at once. Worst-covered first.
     </p>
     <div class="stats" id="network-stats"></div>
     <div class="toolbar">
-      <label class="check"><input type="checkbox" id="only-unmapped"> Only unmapped &amp; orphan</label>
-      <input id="network-q" type="search" placeholder="Filter networks…" autocomplete="off">
+      <label class="switch">
+        <input type="checkbox" id="only-unmapped">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Only unmapped &amp; orphan</span>
+      </label>
+      <div class="field-search">
+        <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="9" cy="9" r="6"/><path d="m14 14 4 4" stroke-linecap="round"/>
+        </svg>
+        <input id="network-q" type="search" placeholder="Filter networks" autocomplete="off">
+      </div>
     </div>
     <div class="table-wrap">
       <table id="network-table">
         <thead>
           <tr>
-            <th>Network</th><th class="num">Titles</th><th class="num">Eps</th>
+            <th>Network</th><th class="num">Titles</th><th class="num col-eps">Eps</th>
             <th>Status</th><th>Routes to</th><th>Map every title to…</th>
           </tr>
         </thead>
@@ -151,33 +189,49 @@
   <!-- ── Channels ────────────────────────────────────────────── -->
   <section id="tab-channels" class="panel">
     <div class="toolbar">
-      <label class="check"><input type="checkbox" id="hide-nocontent" checked> Hide music &amp; utility channels</label>
-      <label class="check"><input type="checkbox" id="only-problem"> Only empty or thin</label>
+      <label class="switch">
+        <input type="checkbox" id="hide-nocontent" checked>
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Hide music &amp; utility</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="only-problem">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-text">Only empty or thin</span>
+      </label>
       <span class="spacer"></span>
-      <span class="hint-inline">Streaming-first concentrates content — watch for one channel swallowing the library.</span>
+      <span class="hint">Streaming-first concentrates content — watch for one channel swallowing the library.</span>
     </div>
     <div class="table-wrap">
       <table id="channel-table">
         <thead>
-          <tr><th class="num">#</th><th>Channel</th><th>Category</th><th class="num">Existing</th><th class="num">Added</th><th class="num">Total</th><th>Balance</th></tr>
+          <tr>
+            <th class="num">#</th><th class="col-art"></th><th>Channel</th>
+            <th class="col-cat">Category</th><th class="num">Existing</th>
+            <th class="num">Added</th><th class="num">Total</th><th>Balance</th>
+          </tr>
         </thead>
         <tbody id="channel-body"></tbody>
       </table>
     </div>
+    <p class="hint logo-hint">
+      Drop your own artwork in <code>/config/logos</code> as <code>1068.png</code> (channel
+      number) or <code>logo_hbyomin.png</code>. Anything missing gets a generated badge.
+    </p>
   </section>
 
-  <!-- ── Custom stations ─────────────────────────────────────── -->
+  <!-- ── Stations ────────────────────────────────────────────── -->
   <section id="tab-stations" class="panel">
-    <p class="hint">
-      Point one of your own NostalgiaTV channels at a real lineup. Give it a network
-      TMDB knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>) or an existing
+    <p class="lede">
+      Point one of your own NostalgiaTV channels at a real lineup — a network TMDB
+      knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>), or an existing
       channel whose content it should borrow.
     </p>
-    <form id="station-form" class="station-form">
+    <form id="station-form" class="card form-card">
       <div class="grid">
-        <label>Channel number<input type="number" id="st-number" placeholder="auto"></label>
-        <label>Station name<input type="text" id="st-name" required placeholder="Retro Gaming"></label>
-        <label>Mode
+        <label class="field">Channel number<input type="number" id="st-number" placeholder="auto"></label>
+        <label class="field">Station name<input type="text" id="st-name" required placeholder="Retro Gaming"></label>
+        <label class="field">Mode
           <select id="st-mode">
             <option value="claim">Claim — take the content</option>
             <option value="mirror">Mirror — also show it</option>
@@ -185,13 +239,13 @@
         </label>
       </div>
       <div class="grid">
-        <label>Source networks <small>comma separated</small>
+        <label class="field">Source networks <small>comma separated</small>
           <input type="text" id="st-networks" placeholder="G4, TechTV">
         </label>
-        <label>Borrow channels <small>numbers, comma separated</small>
+        <label class="field">Borrow channels <small>numbers</small>
           <input type="text" id="st-channels" placeholder="1007, 1006">
         </label>
-        <label>Keywords <small>optional</small>
+        <label class="field">Keywords <small>optional</small>
           <input type="text" id="st-keywords" placeholder="video game, esports">
         </label>
       </div>
@@ -203,128 +257,166 @@
 
   <!-- ── Settings ────────────────────────────────────────────── -->
   <section id="tab-settings" class="panel">
-    <form id="settings-form" class="settings-form">
-      <fieldset>
-        <legend>Media server</legend>
-        <label>Where your library lives
+    <div class="settings-grid">
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>Media server</h3>
+            <p>Where your library lives. NostalgiaTV is never contacted — it only supplies <code>channels.csv</code>.</p>
+          </div>
+          <span class="test-badge" id="server-badge"></span>
+        </header>
+
+        <label class="field">Server
           <select id="source">
             <option value="plex">Plex</option>
             <option value="jellyfin">Jellyfin</option>
           </select>
-          <small>NostalgiaTV is never contacted — it only supplies <code>channels.csv</code>.</small>
         </label>
 
         <div id="source-plex">
-          <label>Plex server URL
+          <label class="field">Server URL
             <input type="text" id="plex-url" placeholder="http://192.168.1.245:32400">
-            <small>Use the host IP, not <code>localhost</code>, when Nostalgia Line runs in Docker.</small>
+            <small>Use the host IP, not <code>localhost</code>, when running in Docker.</small>
           </label>
-          <label>X-Plex-Token
+          <label class="field">X-Plex-Token
             <input type="password" id="plex-token" placeholder="leave blank to keep current" autocomplete="off">
           </label>
-          <label>Libraries <small>comma separated, blank = every show library</small>
+          <label class="field">Libraries <small>comma separated, blank = all show libraries</small>
             <input type="text" id="plex-libraries" placeholder="Shows, Anime">
           </label>
         </div>
 
-        <div id="source-jellyfin" class="hidden">
-          <label>Jellyfin server URL
+        <div id="source-jellyfin" class="is-hidden">
+          <label class="field">Server URL
             <input type="text" id="jellyfin-url" placeholder="http://192.168.1.245:8096">
           </label>
-          <label>API key
+          <label class="field">API key
             <input type="password" id="jellyfin-key" placeholder="leave blank to keep current" autocomplete="off">
-            <small>Dashboard → Advanced → API Keys → <em>+</em></small>
+            <small>Dashboard → Advanced → API Keys</small>
           </label>
-          <label>Libraries <small>comma separated, blank = every show library</small>
+          <label class="field">Libraries <small>comma separated, blank = all show libraries</small>
             <input type="text" id="jellyfin-libraries" placeholder="Shows, Anime">
           </label>
         </div>
-      </fieldset>
 
-      <fieldset>
-        <legend>TMDB</legend>
-        <label>API key
+        <div class="card-foot">
+          <button class="btn" type="button" id="test-server">Test media server</button>
+        </div>
+        <div id="server-result" class="test-result"></div>
+      </section>
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>TMDB</h3>
+            <p>Supplies the broadcast network, which no media server stores.</p>
+          </div>
+          <span class="test-badge" id="tmdb-badge"></span>
+        </header>
+        <label class="field">API key
           <input type="password" id="tmdb-key" placeholder="leave blank to keep current" autocomplete="off">
           <small>The same key Kometa uses.</small>
         </label>
-      </fieldset>
-      <fieldset>
-        <legend>Routing</legend>
-        <label>Mode
+        <div class="card-foot">
+          <button class="btn" type="button" id="test-tmdb">Test TMDB</button>
+        </div>
+        <div id="tmdb-result" class="test-result"></div>
+      </section>
+
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>Routing</h3>
+            <p>How titles are placed when nothing already assigns them.</p>
+          </div>
+        </header>
+        <label class="field">Mode
           <select id="routing-mode">
-            <option value="streaming_first">Streaming-first — 85% agreement (recommended)</option>
-            <option value="hybrid">Hybrid — content-type gets first claim (61%)</option>
-            <option value="themed">Themed — route purely by what a show is (33%)</option>
+            <option value="streaming_first">Streaming-first — 85% agreement</option>
+            <option value="hybrid">Hybrid — content type first — 61%</option>
+            <option value="themed">Themed — by what a show is — 33%</option>
           </select>
         </label>
-        <label>Multi-channel
+        <label class="field">Multi-channel
           <select id="multi-channel">
-            <option value="sanctioned_pairs_only">Only pairings the default file already uses</option>
+            <option value="sanctioned_pairs_only">Only pairings your file already uses</option>
             <option value="off">Single channel only</option>
             <option value="permissive">Allow any second channel</option>
           </select>
         </label>
-        <label>Unmapped networks
+        <label class="field">Unmapped networks
           <select id="orphan-network">
-            <option value="parent_fallback">Route to the closest sibling and flag</option>
-            <option value="content_type">Fall through to content-type rules</option>
-            <option value="flag_only">Never place — flag for review</option>
+            <option value="parent_fallback">Closest sibling, and flag</option>
+            <option value="content_type">Fall through to content rules</option>
+            <option value="flag_only">Never place — flag only</option>
           </select>
         </label>
-      </fieldset>
-      <div class="settings-actions">
-        <button class="btn btn-primary" type="submit">Save settings</button>
-        <button class="btn" type="button" id="test-btn">Test connection</button>
-      </div>
-      <div id="test-result"></div>
-    </form>
+      </section>
 
-    <fieldset class="settings-form">
-      <legend>Your channel lineup</legend>
-      <p class="hint">
-        Nostalgia Line ships the stock NostalgiaTV defaults. If you've customised your
-        channels, upload your own <code>channels.csv</code> export — the diff and the
-        sanctioned-pair rules are both rebuilt from your file. The current file is
-        backed up first, and nothing is replaced unless the upload parses cleanly.
-      </p>
-      <p id="defaults-summary" class="hint-inline"></p>
-      <input type="file" id="channels-file" accept=".csv,text/csv">
-      <div id="upload-result"></div>
-    </fieldset>
+      <section class="card settings-card">
+        <header class="card-head">
+          <div>
+            <h3>Channel lineup</h3>
+            <p>The <code>channels.csv</code> everything is diffed against.</p>
+          </div>
+        </header>
+        <div id="defaults-summary" class="kv"></div>
+        <div class="card-foot">
+          <button class="btn" type="button" id="import-btn-2">Import channels.csv</button>
+          <button class="btn btn-ghost" type="button" id="clear-posters">Clear poster cache</button>
+        </div>
+        <div id="upload-result" class="test-result"></div>
+      </section>
+    </div>
+
+    <div class="settings-save">
+      <button class="btn btn-primary" id="save-settings">Save settings</button>
+      <span class="hint">Credentials are stored in <code>/config/config.yaml</code>, never sent to the browser.</span>
+    </div>
   </section>
 </main>
 
 <!-- assignment dialog -->
 <dialog id="assign-dialog">
   <form method="dialog" id="assign-form">
-    <h3 id="assign-title">Assign to a channel</h3>
-    <p id="assign-context" class="assign-context"></p>
-    <input type="search" id="assign-search" placeholder="Filter channels…" autocomplete="off">
+    <header class="dialog-head">
+      <img id="assign-art" alt="" class="dialog-art is-hidden">
+      <div>
+        <h3 id="assign-title">Assign to a channel</h3>
+        <p id="assign-context"></p>
+      </div>
+    </header>
+    <input type="search" id="assign-search" placeholder="Filter channels" autocomplete="off">
     <div id="assign-options" class="assign-options"></div>
-    <div class="assign-actions">
-      <button class="btn" value="cancel">Cancel</button>
+    <footer class="dialog-foot">
+      <button class="btn btn-ghost" value="cancel">Cancel</button>
       <button class="btn btn-primary" id="assign-save" value="save">Assign</button>
-    </div>
+    </footer>
   </form>
 </dialog>
 
 <!-- export dialog -->
 <dialog id="export-dialog">
   <form method="dialog" id="export-form">
-    <h3>Export</h3>
-    <p class="assign-context">
-      Two files, both in the same four-column format NostalgiaTV reads.
-      <strong>channels_merged.csv</strong> is the one you upload back.
-    </p>
-    <label class="check">
-      <input type="checkbox" id="export-review"> Include low-confidence rows that still need review
+    <header class="dialog-head">
+      <div>
+        <h3>Export</h3>
+        <p>Same four-column format NostalgiaTV reads. <strong>channels_merged.csv</strong> is the one you upload back.</p>
+      </div>
+    </header>
+    <label class="switch">
+      <input type="checkbox" id="export-review">
+      <span class="switch-track"><span class="switch-thumb"></span></span>
+      <span class="switch-text">Include low-confidence rows still awaiting review</span>
     </label>
     <div id="export-preview" class="export-preview"></div>
-    <div class="assign-actions">
-      <button class="btn" value="cancel">Close</button>
-      <button class="btn" id="export-write" value="write" type="submit">Write files</button>
-    </div>
-    <div id="export-downloads" class="assign-actions hidden">
+    <footer class="dialog-foot">
+      <button class="btn btn-ghost" value="cancel">Close</button>
+      <button class="btn btn-primary" id="export-write" value="write" type="submit">Write files</button>
+    </footer>
+    <div id="export-downloads" class="dialog-foot is-hidden">
       <a class="btn" href="/api/download/additions" download>Download additions</a>
       <a class="btn btn-primary" href="/api/download/merged" download>Download merged</a>
     </div>

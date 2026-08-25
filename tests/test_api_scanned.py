@@ -399,3 +399,82 @@ def test_a_rejected_upload_leaves_the_defaults_alone(client):
     before = client.get("/api/status").json()["defaults"]["rows"]
     client.post("/api/channels-file", content=b"a,b,c\n1,2,3\n")
     assert client.get("/api/status").json()["defaults"]["rows"] == before
+
+
+# -- split connection tests, logos, posters ------------------------------
+
+
+def test_server_and_tmdb_tests_are_independent(client):
+    """A bad TMDB key must not make the media server look broken, or vice versa."""
+    server = client.post("/api/test/server").json()
+    tmdb = client.post("/api/test/tmdb").json()
+    assert set(server) >= {"ok", "kind"}
+    assert "ok" in tmdb
+    # Neither reports on the other.
+    assert "tmdb" not in server
+    assert "sections" not in tmdb
+
+
+def test_server_test_names_the_selected_backend(client):
+    assert client.post("/api/test/server").json()["kind"] == "plex"
+
+
+def test_channel_logo_falls_back_to_a_generated_badge(client):
+    response = client.get("/api/channel-logo/1068")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert "1068" in response.text
+    assert "cache-control" in response.headers
+
+
+def test_channel_logo_404s_for_an_unknown_channel(client):
+    assert client.get("/api/channel-logo/4242").status_code == 404
+
+
+def test_every_channel_has_some_logo(client):
+    """The UI shows art for all of them, so none may 404."""
+    for number in (1001, 1054, 1074, 1113):
+        assert client.get(f"/api/channel-logo/{number}").status_code == 200
+
+
+def test_poster_rejects_a_non_tmdb_path(client):
+    for bad in ("../../etc/passwd", "https://evil.example/x.jpg", "/nested/x.jpg"):
+        assert client.get("/api/poster", params={"path": bad}).status_code == 400
+
+
+def test_poster_cache_can_be_cleared(client):
+    assert "removed" in client.post("/api/posters/clear").json()
+
+
+def test_status_reports_pending_changes_and_provenance(client):
+    body = client.get("/api/status").json()
+    assert "pending" in body
+    assert set(body["pending"]) == {"additions", "held_for_review", "overrides"}
+    assert "posters" in body
+    assert "baseline" in body
+    assert "last_export_at" in body
+
+
+def test_export_records_when_it_happened(client):
+    """The client is module-scoped, so assert the stamp moves rather than that
+    it starts empty - an earlier test in this module may already have exported."""
+    client.post("/api/export", json={"include_review": False})
+    first = client.get("/api/status").json()["last_export_at"]
+    assert first is not None
+
+    client.post("/api/export", json={"include_review": True})
+    second = client.get("/api/status").json()["last_export_at"]
+    assert second >= first
+
+
+def test_uploading_a_lineup_records_its_provenance(client):
+    csv_text = (
+        "Channel Number,Channel Name,Title,Release Year\n"
+        "1068,H.B.Yo Min,Provenance Show,2001\n"
+    )
+    client.post("/api/channels-file", content=csv_text.encode())
+    baseline = client.get("/api/status").json()["baseline"]
+    assert baseline["rows"] == 1
+    assert baseline["filename"] == "channels.csv"
+    assert len(baseline["sha256"]) == 16
+    assert baseline["at"] > 0
