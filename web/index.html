@@ -27,10 +27,6 @@
   <div class="topbar-actions">
     <span id="scan-state" class="pill" data-state="idle">idle</span>
     <button id="cancel-btn" class="btn btn-ghost is-hidden">Cancel</button>
-    <div class="btn-group">
-      <button id="import-btn" class="btn" title="Load a channels.csv exported from NostalgiaTV">Import</button>
-      <button id="export-btn" class="btn">Export</button>
-    </div>
     <button id="scan-btn" class="btn btn-primary">Scan library</button>
     <input type="file" id="channels-file" accept=".csv,text/csv" hidden>
   </div>
@@ -65,9 +61,9 @@
 <nav class="tabs" role="tablist">
   <button class="tab is-active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
   <button class="tab" data-tab="review" role="tab">Review <span class="count" id="tab-review-count"></span></button>
-  <button class="tab" data-tab="networks" role="tab" title="Real TV networks TMDB reports for your titles">Source networks <span class="count" id="tab-networks-count"></span></button>
-  <button class="tab" data-tab="channels" role="tab" title="The NostalgiaTV channels your titles are assigned to">Your channels</button>
-  <button class="tab" data-tab="stations" role="tab" title="Channels you created yourself in NostalgiaTV">Custom stations</button>
+  <button class="tab" data-tab="networks" role="tab" title="Point each real-world station at a NostalgiaTV channel">Station mapping <span class="count" id="tab-networks-count"></span></button>
+  <button class="tab" data-tab="channels" role="tab" title="Your NostalgiaTV channels and what is on each one">Channels</button>
+  <button class="tab" data-tab="stations" role="tab" title="Channels you created yourself in NostalgiaTV">Custom channels</button>
   <button class="tab" data-tab="settings" role="tab">Settings</button>
 </nav>
 </div>
@@ -75,8 +71,13 @@
 <main>
   <!-- ── Library ─────────────────────────────────────────────── -->
   <section id="tab-library" class="panel is-active">
-    <p class="lede">Everything in your media library, and where each title is going.
-      The tiles are filters — click one to see exactly what it counts.</p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Library</h2>
+        <p>Every show in your media library and which channel it is going to. The tiles below are filters — click one to see exactly what it counts.</p>
+      </div>
+      <div class="page-actions"><button class="btn" id="import-btn-3">Import lineup</button><button class="btn btn-primary" id="export-btn-2">Export CSV</button></div>
+    </header>
     <div class="stats" id="stats"></div>
     <div id="diagnostics"></div>
 
@@ -176,11 +177,14 @@
 
   <!-- ── Review ──────────────────────────────────────────────── -->
   <section id="tab-review" class="panel">
-    <p class="lede">
-      Low-confidence placements and every orphan network. In the spec's own testing
-      <strong>22 of 32</strong> uncertain guesses were wrong — these are held back
-      from the export until you look at them.
-    </p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Review</h2>
+        <p>Placements the app is not confident about. These are held back from the export until you look — in the spec's own testing, 22 of 32 uncertain guesses turned out wrong. They group by cause, so this is usually a handful of decisions rather than a long list.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
+
     <div class="toolbar">
       <div class="segmented" role="tablist">
         <button class="seg is-on" id="rev-grouped" role="tab">Grouped</button>
@@ -196,12 +200,14 @@
 
   <!-- ── Networks ────────────────────────────────────────────── -->
   <section id="tab-networks" class="panel">
-    <p class="lede">
-      The real-world networks TMDB reports for your titles — HBO, Netflix, AMC — and
-      which NostalgiaTV channel each one feeds. Mapping an unmapped network places
-      every title on it at once, so this is the fastest way to clear a lot of
-      uncertainty. Worst-covered first.
-    </p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Station mapping</h2>
+        <p>Point each real-world station at a NostalgiaTV channel. HBO feeds H.B.Yo Min, AMC feeds A.M.Sea, and so on. Mapping one station moves every title on it at once, which makes this the fastest way to clear uncertainty. Worst-covered first.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
+
     <div class="stats" id="network-stats"></div>
     <div class="toolbar">
       <label class="switch">
@@ -232,6 +238,13 @@
 
   <!-- ── Channels ────────────────────────────────────────────── -->
   <section id="tab-channels" class="panel">
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Channels</h2>
+        <p>Your 113 NostalgiaTV channels and how full each one is. Click a channel to see everything on it, and what the real station it parodies actually aired.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
     <div class="toolbar">
       <label class="switch">
         <input type="checkbox" id="hide-nocontent" checked>
@@ -282,11 +295,14 @@
 
   <!-- ── Stations ────────────────────────────────────────────── -->
   <section id="tab-stations" class="panel">
-    <p class="lede">
-      Point one of your own NostalgiaTV channels at a real lineup — a network TMDB
-      knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>), or an existing
-      channel whose content it should borrow.
-    </p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Custom channels</h2>
+        <p>Channels you created yourself in NostalgiaTV. Tell Nostalgia Line what each one is — a real station TMDB knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>), or an existing channel whose content it should borrow — and it will fill automatically.</p>
+      </div>
+      <div class="page-actions"></div>
+    </header>
+
     <form id="station-form" class="card form-card">
       <div class="grid">
         <label class="field">Channel number<input type="number" id="st-number" placeholder="auto"></label>
@@ -317,6 +333,13 @@
 
   <!-- ── Settings ────────────────────────────────────────────── -->
   <section id="tab-settings" class="panel">
+    <header class="page-head">
+      <div class="page-head-text">
+        <h2>Settings</h2>
+        <p>Where your library comes from, how titles are routed, and who can reach this app.</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="save-settings-2">Save settings</button></div>
+    </header>
     <div class="settings-grid">
 
       <section class="card settings-card">

@@ -1363,7 +1363,7 @@ async function loadSettings() {
   $('orphan-network').value = settings.orphan_network;
 }
 
-$('save-settings').addEventListener('click', async () => {
+async function saveSettings() {
   const payload = {
     source: $('source').value,
     plex_url: $('plex-url').value.trim(),
@@ -1390,7 +1390,11 @@ $('save-settings').addEventListener('click', async () => {
   } catch (err) {
     banner(err.message, 'err');
   }
-});
+}
+
+// Save appears both in the page header and at the foot of the settings grid.
+$('save-settings').addEventListener('click', saveSettings);
+$('save-settings-2').addEventListener('click', saveSettings);
 
 function setBadge(id, state, text) {
   const el = $(id);
@@ -1445,7 +1449,7 @@ $('clear-posters').addEventListener('click', async () => {
 });
 
 // Both Import buttons (header and Settings) drive the one hidden file input.
-$('import-btn').addEventListener('click', () => $('channels-file').click());
+$('import-btn-3').addEventListener('click', () => $('channels-file').click());
 $('import-btn-2').addEventListener('click', () => $('channels-file').click());
 
 $('channels-file').addEventListener('change', async (event) => {
@@ -1471,7 +1475,7 @@ $('channels-file').addEventListener('change', async (event) => {
 });
 
 /* ── export ────────────────────────────────────────────────── */
-$('export-btn').addEventListener('click', async () => {
+$('export-btn-2').addEventListener('click', async () => {
   $('export-downloads').classList.add('is-hidden');
   await refreshExportPreview();
   $('export-dialog').showModal();
@@ -1529,7 +1533,7 @@ const GUIDE_ACTIONS = {
   settings: () => showTab('settings'),
   scan: () => $('scan-btn').click(),
   review: () => showTab('review'),
-  export: () => $('export-btn').click(),
+  export: () => { showTab('library'); $('export-btn-2').click(); },
   import: () => $('channels-file').click(),
 };
 
