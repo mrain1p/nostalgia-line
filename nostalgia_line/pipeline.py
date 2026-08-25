@@ -276,7 +276,13 @@ class ScanResult:
                         "mapping_source": entry.mapping_source,
                         "needs_review": entry.resolution.needs_review,
                         "confidence": entry.resolution.confidence,
-                        "reason": primary.reason if primary else "",
+                        # A lineup title never ran through the cascade, so it has
+                        # no rule to cite. Saying where it came from beats a blank.
+                        "reason": (
+                            primary.reason
+                            if primary
+                            else "already on this channel in your channels.csv"
+                        ),
                         "other_channels": [
                             {"number": n, "name": catalog.name_of(n)}
                             for n in entry.channels

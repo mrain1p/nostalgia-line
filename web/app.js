@@ -369,7 +369,9 @@ function artCell(item) {
 }
 
 function rowHtml(item) {
-  const why = (item.assignments || []).map((a) => a.reason).join('; ') || item.review_reason || '';
+  const why = (item.assignments || []).map((a) => a.reason).join('; ')
+    || item.review_reason
+    || (item.mapping_source === 'lineup' ? 'already in your channels.csv' : '');
   const flag = item.needs_review ? `<span class="flag" title="${esc(item.review_reason)}">⚑</span>` : '';
   const over = item.overridden ? '<span class="overridden" title="assigned by hand">✎</span>' : '';
   const checked = state.selected.has(item.uid) ? 'checked' : '';
