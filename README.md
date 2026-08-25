@@ -44,13 +44,19 @@ First match wins. Every step records *why* it fired.
 | 1 | **Network match** → `network_map.csv` | high |
 | 2 | **Orphan network** → closest sibling (Peacock → N.B.Sea) | medium, flagged |
 | 3 | **Content type** from TMDB genres + keywords | medium |
-| 4 | **Genre channel** (1097–1110), last resort | low, flagged |
+| 4 | **Genre suggestion** (1097–1110) — recorded, never placed | flagged |
 | 5 | **Unassigned** — surfaced in the review queue, never dropped | — |
 
 Step 3 exists because TMDB's TV taxonomy has no Travel genre. Travel shows are
 tagged `Documentary` or `Reality`, so genre-based routing silently reports zero
 travel content in a library that has *An Idiot Abroad*, both Bourdain series and
 *The Grand Tour*. Keywords carry the signal genres lose.
+
+Step 4 used to place titles. Measured against a real lineup it had agreed **0 of
+9** times — in line with the spec's 69% error rate on the low-confidence tier —
+so it now records what it *would* have chosen and places nothing. The title
+lands in the review queue unassigned, with the suggestion one click away. An
+unassigned title you can see is honest; a wrong placement is not.
 
 ### Why there's a review queue
 
@@ -135,6 +141,16 @@ credential, add a TMDB API key (the same one Kometa uses), then hit
 **Scan library** → pulls every show, resolves each against TMDB, and diffs
 against your existing `channels.csv`. TMDB responses are cached on disk by
 `tmdb_id`, so the second scan is much faster.
+
+**Scheduled scans** — Settings can run that scan unattended on an interval
+(optionally holding off during quiet hours), so new shows surface without anyone
+remembering to look. Each scan is compared with the one before it by stable
+title identity: every entry is marked *new*, *moved* or unchanged, departed
+titles are counted, and the comparison survives a container restart because it
+is stored with the scan. The header shows *"14 new, 1 moved since last scan"*,
+a stat tile filters the library to exactly those rows, and the guide points at
+them when they need a decision. A due scan is skipped while another scan is
+running, and a failed one reports its error and does not stop the next.
 
 **Library tab** — the main view, with posters. Every title as a row: name, year,
 seasons, episodes, network, channel, confidence, and how it was placed. Sortable,
@@ -292,6 +308,28 @@ Streaming-first is the default because it matches the convention already encoded
 in `channels.csv`. Themed routing empties the streaming channels entirely; hybrid
 produces a file inconsistent with the 4,200 rows already in it.
 
+Those figures came from the spec's library, not yours — so once a scan has run,
+the app re-measures all three modes against your own lineup and shows the result
+on the Station mapping tab and beside each mode in Settings. See *Measuring
+accuracy* below.
+
+### Measuring accuracy
+
+Every show your `channels.csv` already places is a known right answer. For each
+one, `GET /api/accuracy` asks the cascade what it *would* have chosen — under a
+probe title, so the lineup cannot answer for itself — and compares. The Station
+mapping tab shows overall agreement, a per-rule table, the three routing modes
+side by side, and the actual disagreements, each of which is either a routing
+bug or a debatable call in the lineup.
+
+Sample sizes are reported next to every percentage, and below 20 samples the UI
+says "too few to judge" instead of rendering a verdict — `0/9` is a signal, not
+a proof. The measurement is cached per scan; it is a few hundred cascade runs
+and is not recomputed on a poll.
+
+This is also the yardstick for change: any future routing tweak (films
+included — see below) should move these numbers before it ships.
+
 ### Multi-channel assignments
 
 The default file puts 8.7% of titles on more than one channel, and the pairings
@@ -351,6 +389,13 @@ That default is deliberate. Films have no network to lean on — movies carry no
 decade. A decade fallback is a weak enough signal that it should be a choice
 rather than a surprise, especially since films usually outnumber shows several
 times over.
+
+The accuracy measurement gives that choice a yardstick: genre is the weakest
+rule the cascade has (it stopped placing *shows* for exactly that reason), and
+films lean on it hardest. The accuracy panel keeps scoring the retired genre
+rule's *suggestions* against your lineup — when that number earns trust on your
+library, turning films on becomes an evidence-based decision instead of a
+hopeful one.
 
 The era split matters more than it looks: without sending pre-2000 horror to VHS
 Channel, Terror Channel swallowed 430 titles in the spec's own testing. On a
