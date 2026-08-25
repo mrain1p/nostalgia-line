@@ -10,7 +10,7 @@
 
 services:
   nostalgia-line:
-    # :latest tracks main. Use :dev for the bleeding edge, or :v1.0.0 to pin.
+    # :latest tracks main. Use :dev for the bleeding edge, or :1.0.0 to pin.
     image: ghcr.io/mrain1p/nostalgia-line:latest
     container_name: nostalgia-line
     ports:

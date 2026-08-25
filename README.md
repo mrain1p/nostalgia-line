@@ -81,8 +81,9 @@ curl -O https://raw.githubusercontent.com/mrain1p/nostalgia-line/main/docker-com
 docker compose pull && docker compose up -d
 ```
 
-> **Tags:** `:latest` tracks `main`, `:dev` tracks `dev`, and `:v1.0.0` pins a
-> release. Use `:latest` unless you want the bleeding edge.
+> **Tags:** `:latest` tracks `main`, `:dev` tracks `dev`, and `:1.0.0` / `:1.0`
+> pin a release — note the git tag is `v1.0.0` but the image tag drops the `v`.
+> Use `:latest` unless you want the bleeding edge.
 
 Then open <http://localhost:8777> and fill in the Settings tab. Everything —
 Plex URL, token, TMDB key, routing mode, custom stations — is configured in the
