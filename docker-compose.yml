@@ -1,6 +1,9 @@
-# Nostalgia Line — pull and run. No build step, no login.
+# Nostalgia Line — pull and run. No build step.
 #
 #   docker compose pull && docker compose up -d
+#
+# If the GHCR package is still private, log in once first:
+#   echo YOUR_PAT | docker login ghcr.io -u mrain1p --password-stdin
 #
 # Then open http://localhost:8777 and fill in the Settings tab.
 # To build from source instead: docker compose -f docker-compose.build.yml up -d --build
@@ -18,7 +21,7 @@ services:
       # Keep this mounted and an image upgrade never touches your data.
       - ./config:/config
     environment:
-      - TZ=America/Chicago
+      - TZ=America/New_York
       # Optional — the Settings tab writes these into /config/config.yaml for you.
       # Set them here only if you would rather keep them in compose.
       # - PLEX_URL=http://192.168.1.245:32400
