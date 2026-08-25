@@ -38,3 +38,23 @@ jobs:
             sleep 1
           done
           echo "container never became healthy"; docker logs nl; exit 1
+
+      - name: Honours PUID/PGID and writes /config as that user
+        run: |
+          mkdir -p "$PWD/cfgtest"
+          docker run -d --name nlp -p 8778:8777             -e PUID=1000 -e PGID=10 -e TZ=America/New_York             -e NOSTALGIA_PORT=8777             -v "$PWD/cfgtest:/config" nostalgia-line:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8778/api/status > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8778/api/status > /dev/null || {
+            echo "did not come up under PUID/PGID"; docker logs nlp; exit 1; }
+          echo "--- process user inside the container ---"
+          docker exec nlp id
+          docker exec nlp id -u | grep -qx 1000 || { echo "not running as PUID"; exit 1; }
+          echo "--- ownership of seeded files on the host ---"
+          ls -ln cfgtest cfgtest/data | head
+          test "$(stat -c %u cfgtest/config.yaml)" = "1000" || { echo "config.yaml not owned by PUID"; exit 1; }
+          test "$(stat -c %g cfgtest/config.yaml)" = "10" || { echo "config.yaml not owned by PGID"; exit 1; }
+          echo "PUID/PGID verified"
+          docker rm -f nlp

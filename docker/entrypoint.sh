@@ -55,4 +55,16 @@ YAML
   echo "created $CONFIG_FILE - set your Plex token and TMDB key in the web UI"
 fi
 
+# Run as the host user so files under /config stay editable from the NAS shell.
+# PUID/PGID follow the linuxserver.io convention the rest of the stack uses.
+# gosu takes raw numeric ids, so no account has to exist inside the image.
+if [ "$(id -u)" = "0" ] && [ -n "${PUID:-}" ]; then
+  RUN_GID="${PGID:-$PUID}"
+  echo "running as ${PUID}:${RUN_GID}"
+  if ! chown -R "${PUID}:${RUN_GID}" "$CONFIG_DIR" 2>/dev/null; then
+    echo "warning: could not chown $CONFIG_DIR - check its permissions on the host"
+  fi
+  exec gosu "${PUID}:${RUN_GID}" "$@"
+fi
+
 exec "$@"
