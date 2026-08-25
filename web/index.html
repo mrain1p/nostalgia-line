@@ -81,6 +81,11 @@
         <option value="low">Low</option>
         <option value="none">Unplaced</option>
       </select>
+      <select id="type-filter" aria-label="Type">
+        <option value="">Shows &amp; films</option>
+        <option value="show">Shows only</option>
+        <option value="movie">Films only</option>
+      </select>
       <select id="source-filter" aria-label="Placed by">
         <option value="">Any mapping</option>
         <option value="lineup">From your channels.csv</option>
@@ -397,6 +402,11 @@
           </div>
         </header>
         <div class="settings-fields">
+        <label class="switch" style="margin-bottom:12px">
+          <input type="checkbox" id="include-movies">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-text">Include films as well as shows</span>
+        </label>
         <label class="field">Mode
           <select id="routing-mode">
             <option value="streaming_first">Streaming-first — 85% agreement</option>

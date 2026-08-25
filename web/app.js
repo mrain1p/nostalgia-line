@@ -285,6 +285,7 @@ function libraryParams(extra = {}) {
   if ($('status-filter').value) params.set('status_filter', $('status-filter').value);
   if ($('confidence-filter').value) params.set('confidence', $('confidence-filter').value);
   if ($('source-filter').value) params.set('source', $('source-filter').value);
+  if ($('type-filter').value) params.set('item_type', $('type-filter').value);
   if ($('section-filter').value) params.set('section', $('section-filter').value);
   if ($('review-filter').checked) params.set('review_only', 'true');
   if (state.networkFilter) params.set('network', state.networkFilter);
@@ -383,8 +384,8 @@ function rowHtml(item) {
     <td class="col-art">${artCell(item)}</td>
     <td class="title-cell">${esc(item.title)}${flag}${over}</td>
     <td class="num col-year">${item.year ?? ''}</td>
-    <td class="num col-sn">${item.season_count || ''}</td>
-    <td class="num col-eps">${item.episode_count || ''}</td>
+    <td class="num col-sn">${item.type === 'movie' ? '<span class="muted">film</span>' : (item.season_count || '')}</td>
+    <td class="num col-eps">${item.type === 'movie' ? '' : (item.episode_count || '')}</td>
     <td>${net}</td>
     <td>${channelChips(item)}</td>
     <td class="col-conf"><span class="conf conf-${esc(item.confidence)}">${esc(item.confidence)}</span></td>
@@ -410,12 +411,14 @@ $('q').addEventListener('input', () => {
   searchTimer = setTimeout(() => { state.offset = 0; loadLibrary(); }, 220);
 });
 $('show-posters').addEventListener('change', loadLibrary);
-['status-filter', 'section-filter', 'review-filter', 'confidence-filter', 'source-filter'].forEach((id) => {
+['status-filter', 'section-filter', 'review-filter', 'confidence-filter', 'source-filter',
+ 'type-filter'].forEach((id) => {
   $(id).addEventListener('change', () => { state.offset = 0; loadLibrary(); });
 });
 $('clear-filters').addEventListener('click', () => {
   $('q').value = '';
-  ['status-filter', 'section-filter', 'confidence-filter', 'source-filter'].forEach((id) => { $(id).value = ''; });
+  ['status-filter', 'section-filter', 'confidence-filter', 'source-filter', 'type-filter']
+    .forEach((id) => { $(id).value = ''; });
   $('review-filter').checked = false;
   state.networkFilter = '';
   state.offset = 0;
@@ -1353,6 +1356,7 @@ async function loadSettings() {
   $('tmdb-key').placeholder = settings.tmdb_api_key_set ? '•••••• (saved)' : 'required';
   $('ntv-m3u').value = settings.nostalgiatv_m3u_url || '';
   $('ntv-auto').checked = settings.auto_refresh_logos !== false;
+  $('include-movies').checked = Boolean(settings.include_movies);
   $('routing-mode').value = settings.routing_mode;
   $('multi-channel').value = settings.multi_channel;
   $('orphan-network').value = settings.orphan_network;
@@ -1368,6 +1372,7 @@ $('save-settings').addEventListener('click', async () => {
     nostalgiatv_m3u_url: $('ntv-m3u').value.trim(),
     auto_refresh_logos: $('ntv-auto').checked,
     routing_mode: $('routing-mode').value,
+    include_movies: $('include-movies').checked,
     multi_channel: $('multi-channel').value,
     orphan_network: $('orphan-network').value,
   };

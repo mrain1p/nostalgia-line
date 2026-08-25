@@ -48,6 +48,10 @@ class TMDBConfig:
 
 @dataclass
 class RoutingConfig:
+    # Films are opt-in. They outnumber shows several times over in a typical
+    # library, and their routing has no network to lean on - only genre, era and
+    # collection - so the results deserve a deliberate choice.
+    include_movies: bool = False
     mode: str = "streaming_first"
     multi_channel: str = "sanctioned_pairs_only"
     orphan_network: str = "parent_fallback"

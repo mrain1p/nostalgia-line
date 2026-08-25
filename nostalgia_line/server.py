@@ -115,6 +115,7 @@ class SettingsIn(BaseModel):
     routing_mode: str | None = None
     multi_channel: str | None = None
     orphan_network: str | None = None
+    include_movies: bool | None = None
 
 
 class OverrideIn(BaseModel):
@@ -215,6 +216,7 @@ def get_settings() -> dict:
         "routing_mode": cfg.routing.mode,
         "multi_channel": cfg.routing.multi_channel,
         "orphan_network": cfg.routing.orphan_network,
+        "include_movies": cfg.routing.include_movies,
         "output": {"additions": cfg.output.additions_only, "merged": cfg.output.merged},
     }
 
@@ -250,6 +252,8 @@ def put_settings(payload: SettingsIn) -> dict:
         cfg.routing.multi_channel = payload.multi_channel
     if payload.orphan_network:
         cfg.routing.orphan_network = payload.orphan_network
+    if payload.include_movies is not None:
+        cfg.routing.include_movies = payload.include_movies
     try:
         cfg.routing.validate()
     except ValueError as exc:
@@ -298,7 +302,7 @@ async def test_tmdb() -> dict:
 
 
 @app.post("/api/scan")
-async def scan(include_movies: bool = False) -> dict:
+async def scan(include_movies: bool | None = None) -> dict:
     if state.scan_task and not state.scan_task.done():
         raise HTTPException(status_code=409, detail="a scan is already running")
     if not state.configured:
@@ -323,7 +327,9 @@ async def scan(include_movies: bool = False) -> dict:
                 state.stations,
                 overrides=state.store.overrides,
                 network_overrides=state.store.networks,
-                include_movies=include_movies,
+                include_movies=(
+                    state.cfg.routing.include_movies if include_movies is None else include_movies
+                ),
                 progress=progress,
             )
             state.progress = {"phase": "done", "done": 1, "total": 1}
@@ -380,6 +386,7 @@ def library(
     rule: str = "",
     confidence: str = "",
     source: str = "",
+    item_type: str = "",
     review_only: bool = False,
     sort: str = "title",
     direction: str = "asc",
@@ -412,6 +419,8 @@ def library(
     if source:
         wanted = set(source.split(","))
         entries = [e for e in entries if e.mapping_source in wanted]
+    if item_type:
+        entries = [e for e in entries if e.type == item_type]
     if q:
         needle = q.casefold()
         entries = [
