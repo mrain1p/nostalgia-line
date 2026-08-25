@@ -214,10 +214,24 @@
         <tbody id="channel-body"></tbody>
       </table>
     </div>
-    <p class="hint logo-hint">
-      Drop your own artwork in <code>/config/logos</code> as <code>1068.png</code> (channel
-      number) or <code>logo_hbyomin.png</code>. Anything missing gets a generated badge.
-    </p>
+    <div class="card logo-card">
+      <header class="card-head">
+        <div>
+          <h3>Channel artwork</h3>
+          <p>Upload images or a zip. Filenames are matched to channels by number, by
+             channel name, or by NostalgiaTV's <code>logo_&lt;name&gt;.png</code> convention —
+             a folder lifted from another install imports as-is. Anything unmatched
+             is reported, never silently dropped.</p>
+        </div>
+        <span class="test-badge" id="logo-badge"></span>
+      </header>
+      <div class="card-foot">
+        <button class="btn" type="button" id="logo-import-btn">Import artwork</button>
+        <button class="btn btn-ghost" type="button" id="logo-clear-btn">Remove all</button>
+        <input type="file" id="logo-files" accept="image/*,.zip" multiple hidden>
+      </div>
+      <div id="logo-result" class="test-result"></div>
+    </div>
   </section>
 
   <!-- ── Stations ────────────────────────────────────────────── -->

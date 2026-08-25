@@ -125,6 +125,17 @@ class Assignment:
             "primary": self.primary,
         }
 
+    @classmethod
+    def from_dict(cls, raw: dict) -> "Assignment":
+        return cls(
+            channel_number=int(raw["channel_number"]),
+            channel_name=str(raw.get("channel_name", "")),
+            rule=str(raw.get("rule", "")),
+            confidence=str(raw.get("confidence", LOW)),
+            reason=str(raw.get("reason", "")),
+            primary=bool(raw.get("primary", True)),
+        )
+
 
 @dataclass
 class Resolution:
@@ -163,6 +174,17 @@ class Resolution:
             "review_reason": self.review_reason,
             "confidence": self.confidence,
         }
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "Resolution":
+        return cls(
+            status=str(raw["status"]),
+            assignments=[Assignment.from_dict(a) for a in (raw.get("assignments") or [])],
+            existing_channels=[int(c) for c in (raw.get("existing_channels") or [])],
+            network=raw.get("network"),
+            needs_review=bool(raw.get("needs_review", False)),
+            review_reason=str(raw.get("review_reason", "")),
+        )
 
 
 def _hits(haystack: set[str], needles: set[str]) -> set[str]:

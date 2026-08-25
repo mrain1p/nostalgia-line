@@ -33,6 +33,7 @@ const state = {
   networkFilter: '',
   poll: null,
   lastItems: [],
+  logoVersion: 0,
 };
 
 async function api(path, options = {}) {
@@ -168,7 +169,11 @@ function renderProvenance(status) {
   const changed = (pending.additions || 0) + (pending.overrides || 0);
   const sep = '<span class="prov-sep"></span>';
 
+  const scanAge = status.scan_at ? ago(status.scan_at) : null;
+  const scanStale = status.scan_at && (Date.now() / 1000 - status.scan_at) > 86400;
   const parts = [
+    `<span class="prov-item ${scanStale ? 'is-dirty' : ''}">Scan <b>${
+      scanAge ? esc(scanAge) : 'none'}</b>${scanStale ? ' — may be out of date' : ''}</span>`,
     `<span class="prov-item">Lineup <b>${esc(status.defaults.rows)}</b> rows${
       status.baseline?.at ? ` · imported ${esc(ago(status.baseline.at))}` : ' · shipped defaults'}</span>`,
     `<span class="prov-item ${changed ? 'is-dirty' : ''}">${
@@ -683,12 +688,62 @@ function renderNetworks() {
   $(id).addEventListener('change', renderNetworks);
 });
 
+/* ── channel artwork ──────────────────────────────────────── */
+async function loadLogos() {
+  const data = await api('/api/logos').catch(() => null);
+  if (!data) return;
+  const badge = $('logo-badge');
+  badge.dataset.state = data.installed_count ? 'ok' : 'testing';
+  badge.textContent = `${data.installed_count}/${data.total_channels} channels`;
+}
+
+$('logo-import-btn').addEventListener('click', () => $('logo-files').click());
+
+$('logo-files').addEventListener('change', async (event) => {
+  const files = [...event.target.files];
+  if (!files.length) return;
+  $('logo-result').innerHTML = `<p class="hint">Uploading ${files.length} file(s)…</p>`;
+  const body = new FormData();
+  files.forEach((f) => body.append('files', f, f.name));
+  try {
+    const response = await fetch('/api/logos', { method: 'POST', body });
+    if (!response.ok) throw new Error((await response.json()).detail || response.statusText);
+    const r = await response.json();
+    const bits = [`<p class="result-ok">✓ Imported ${r.imported_count} logo(s).</p>`];
+    if (r.unmatched_count) {
+      bits.push(`<p class="hint">${r.unmatched_count} matched no channel:
+        ${r.unmatched.slice(0, 8).map(esc).join(', ')}${r.unmatched_count > 8 ? '…' : ''}</p>`);
+    }
+    if (r.skipped_count) {
+      bits.push(`<p class="hint">${r.skipped_count} skipped:
+        ${r.skipped.slice(0, 5).map((s) => `${esc(s.file)} (${esc(s.why)})`).join(', ')}</p>`);
+    }
+    state.logoVersion += 1;  // bust the browser cache for replaced artwork
+    $('logo-result').innerHTML = bits.join('');
+    loadLogos();
+    loadChannels();
+  } catch (err) {
+    $('logo-result').innerHTML = `<p class="result-err">✗ ${esc(err.message)}</p>`;
+  } finally {
+    event.target.value = '';
+  }
+});
+
+$('logo-clear-btn').addEventListener('click', async () => {
+  if (!confirm('Remove all imported channel artwork?')) return;
+  const r = await api('/api/logos', { method: 'DELETE' });
+  state.logoVersion += 1;
+  $('logo-result').innerHTML = `<p class="hint">Removed ${r.removed} file(s).</p>`;
+  loadLogos(); loadChannels();
+});
+
 /* ── channels ──────────────────────────────────────────────── */
 async function loadChannels() {
   const data = await api('/api/channels').catch(() => null);
   if (!data) return;
   state.channels = data.channels.filter((c) => c.accepts_content);
   renderChannels(data.channels);
+  loadLogos();
 }
 
 function renderChannels(channels) {
@@ -706,7 +761,7 @@ function renderChannels(channels) {
       return `<tr>
         <td class="num">${c.number}</td>
         <td class="col-art"><img class="art-logo" loading="lazy" decoding="async"
-          alt="" src="${esc(logoUrl(c.number))}"></td>
+          alt="" src="${esc(logoUrl(c.number))}?v=${state.logoVersion}"></td>
         <td class="title-cell">${esc(c.name)} ${tag}</td>
         <td class="col-cat">${esc(c.category)}${c.accepts_content ? '' : ' · no content'}</td>
         <td class="num">${c.existing}</td>

@@ -478,3 +478,92 @@ def test_uploading_a_lineup_records_its_provenance(client):
     assert baseline["filename"] == "channels.csv"
     assert len(baseline["sha256"]) == 16
     assert baseline["at"] > 0
+
+
+# -- scan persistence ----------------------------------------------------
+
+
+def test_a_scan_survives_a_restart(client, tmp_path_factory):
+    """A container restart must not cost a re-scan."""
+    from nostalgia_line.pipeline import ScanResult
+
+    state = client.server_module.state
+    state.persist_result()
+    assert state.scan_path.exists()
+
+    restored = ScanResult.load(state.scan_path)
+    assert restored is not None
+    assert len(restored.entries) == len(SCAN)
+    by_title = {e.title: e for e in restored.entries}
+    assert by_title["Alpha Show"].channels == [1068]
+    assert by_title["Gamma Show"].resolution.needs_review is True
+    assert by_title["Zeta Show"].status == STATUS_APP
+
+
+def test_the_snapshot_carries_its_age(client):
+    client.server_module.state.persist_result()
+    assert client.get("/api/status").json()["scan_at"] is not None
+
+
+def test_an_unreadable_snapshot_is_ignored_rather_than_crashing(client, tmp_path):
+    from nostalgia_line.pipeline import ScanResult
+
+    broken = tmp_path / "scan.json.gz"
+    broken.write_bytes(b"definitely not gzip")
+    assert ScanResult.load(broken) is None
+
+
+def test_a_snapshot_from_another_version_is_discarded(client, tmp_path):
+    import gzip
+    import json
+
+    from nostalgia_line.pipeline import ScanResult
+
+    path = tmp_path / "scan.json.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        json.dump({"version": 999, "entries": []}, fh)
+    assert ScanResult.load(path) is None
+
+
+def test_uploading_a_new_lineup_drops_the_snapshot(client):
+    state = client.server_module.state
+    state.persist_result()
+    assert state.scan_path.exists()
+    client.post(
+        "/api/channels-file",
+        content=b"Channel Number,Channel Name,Title,Release Year\n1068,H.B.Yo Min,X,2001\n",
+    )
+    assert not state.scan_path.exists(), "the old scan was diffed against the old file"
+
+
+# -- logo endpoints ------------------------------------------------------
+
+
+def test_logo_listing_reports_coverage(client):
+    body = client.get("/api/logos").json()
+    assert body["total_channels"] == 96
+    assert body["installed_count"] + body["missing_count"] == body["total_channels"]
+
+
+def test_logo_upload_matches_and_reports(client):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    files = [
+        ("files", ("logo_seaw.png", png, "image/png")),
+        ("files", ("logo_tnt.png", png, "image/png")),
+        ("files", ("nonsense.png", png, "image/png")),
+    ]
+    body = client.post("/api/logos", files=files).json()
+    assert body["imported_count"] == 2
+    assert body["unmatched"] == ["nonsense.png"]
+    assert {i["channel"] for i in body["imported"]} == {1021, 1027}
+
+    # and the serving endpoint now returns the real file, not a badge
+    response = client.get("/api/channel-logo/1021")
+    assert response.status_code == 200
+    assert response.content.startswith(b"\x89PNG")
+
+    assert client.delete("/api/logos").json()["removed"] >= 2
+
+
+def test_logo_upload_with_no_files_is_rejected(client):
+    assert client.post("/api/logos").status_code == 422

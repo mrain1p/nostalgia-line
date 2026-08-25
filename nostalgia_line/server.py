@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from .export import build_addition_rows
 from .export import export as run_export
 from .pipeline import ScanResult, apply_override, run_scan
 from .posters import DEFAULT_SIZE, PosterCache
+from .logos import LogoImporter
 from .media import SourceError
 from .sources import build_source, missing_credential_message, source_is_configured
 from .stations import CUSTOM_BAND_START, CustomStation, StationBook
@@ -45,7 +46,10 @@ class AppState:
         self.stations.register_with(self.catalog)
         self.store = Store(self.cfg.path(self.cfg.data.state_file))
         self.posters = PosterCache(self.cfg.path(self.cfg.data.cache_dir) / "posters")
-        self.result: ScanResult | None = None
+        self.scan_path = self.cfg.path("scan.json.gz")
+        # A restart should not cost a re-scan. The snapshot may be dated, and the
+        # UI says so rather than pretending it is live.
+        self.result: ScanResult | None = ScanResult.load(self.scan_path)
         self.scan_task: asyncio.Task | None = None
         self.progress: dict[str, Any] = {"phase": "idle", "done": 0, "total": 0}
         self.last_error: str = ""
@@ -60,6 +64,13 @@ class AppState:
         self.catalog = ChannelCatalog.load(self.cfg.path(self.cfg.data.channel_catalog))
         self.defaults = DefaultAssignments.load(self.cfg.path(self.cfg.data.channels_csv))
         self.stations.register_with(self.catalog)
+
+    def persist_result(self) -> None:
+        if self.result is not None:
+            try:
+                self.result.save(self.scan_path)
+            except OSError as exc:
+                self.last_error = f"could not save the scan: {exc}"
 
     def mark_stale(self, reason: str) -> None:
         if self.result is not None:
@@ -156,6 +167,7 @@ def status() -> dict:
         "last_export_at": state.store.last_export.get("at"),
         "pending": _pending_changes(),
         "posters": state.posters.stats(),
+        "scan_at": state.result.finished_at if state.result else None,
         "stats": state.result.stats() if state.result else None,
         "diagnostics": state.result.diagnostics() if state.result else None,
     }
@@ -296,6 +308,7 @@ async def scan(include_movies: bool = False) -> dict:
                 progress=progress,
             )
             state.progress = {"phase": "done", "done": 1, "total": 1}
+            state.persist_result()
         except asyncio.CancelledError:
             state.progress = {"phase": "cancelled", "done": 0, "total": 0}
             state.last_error = "scan cancelled"
@@ -462,6 +475,71 @@ def clear_posters() -> dict:
     return {"removed": state.posters.clear()}
 
 
+@app.get("/api/logos")
+def list_logos() -> dict:
+    """What artwork is installed, and which channels are still on a badge."""
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    installed = importer.installed()
+    routable = [c for c in state.catalog if c.accepts_content]
+    return {
+        "directory": str(state.cfg.path("logos")),
+        "installed": [
+            {"channel": n, "name": state.catalog.name_of(n), "file": f}
+            for n, f in sorted(installed.items())
+        ],
+        "installed_count": len(installed),
+        "missing_count": sum(1 for c in routable if c.number not in installed),
+        "total_channels": len(routable),
+    }
+
+
+@app.post("/api/logos")
+async def import_logos(files: list[UploadFile] = File(...)) -> dict:
+    """Import channel artwork.
+
+    Accepts any number of images, or a zip of them. Filenames are matched to
+    channels by number, by channel name, or by NostalgiaTV's own
+    `logo_<name>.png` convention, so a folder lifted straight out of another
+    install imports without renaming anything.
+    """
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    report = None
+    plain: list[tuple[str, bytes]] = []
+
+    for upload in files:
+        blob = await upload.read()
+        name = upload.filename or "unnamed"
+        if name.lower().endswith(".zip"):
+            zip_report = importer.import_zip(blob)
+            if report is None:
+                report = zip_report
+            else:
+                report.imported += zip_report.imported
+                report.unmatched += zip_report.unmatched
+                report.skipped += zip_report.skipped
+        else:
+            plain.append((name, blob))
+
+    if plain:
+        file_report = importer.import_files(plain)
+        if report is None:
+            report = file_report
+        else:
+            report.imported += file_report.imported
+            report.unmatched += file_report.unmatched
+            report.skipped += file_report.skipped
+
+    if report is None:
+        raise HTTPException(status_code=400, detail="no files uploaded")
+    return report.to_dict()
+
+
+@app.delete("/api/logos")
+def clear_logos() -> dict:
+    importer = LogoImporter(state.catalog, state.cfg.path("logos"), _network_map_with_overrides())
+    return {"removed": importer.clear()}
+
+
 @app.get("/api/channel-logo/{number}")
 def channel_logo(number: int):
     """A channel's logo.
@@ -537,6 +615,7 @@ def override(payload: OverrideIn) -> dict:
         raise HTTPException(status_code=404, detail=f"no library item {payload.uid}")
     state.store.set_override(payload.uid, payload.channels)
     apply_override(entry, payload.channels, state.catalog)
+    state.persist_result()
     return entry.to_dict(state.catalog)
 
 
@@ -571,6 +650,7 @@ def override_bulk(payload: BulkOverrideIn) -> dict:
         state.store.overrides[uid] = channels
         apply_override(entry, channels, state.catalog)
     state.store.save()
+    state.persist_result()
     return {"updated": len(payload.uids), "channels": payload.channels, "mode": payload.mode}
 
 
@@ -788,6 +868,7 @@ async def upload_channels_file(request: Request) -> dict:
         filename="channels.csv",
     )
     state.result = None  # the old scan was diffed against the old file
+    state.scan_path.unlink(missing_ok=True)
     return {
         "rows": len(state.defaults),
         "previous_rows": previous,
