@@ -9,6 +9,7 @@
 </head>
 <body>
 
+<div class="header-stack">
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark" aria-hidden="true">
@@ -52,6 +53,7 @@
   <button class="tab" data-tab="stations" role="tab">Stations</button>
   <button class="tab" data-tab="settings" role="tab">Settings</button>
 </nav>
+</div>
 
 <main>
   <!-- ── Library ─────────────────────────────────────────────── -->
@@ -284,6 +286,7 @@
           <span class="test-badge" id="server-badge"></span>
         </header>
 
+        <div class="settings-fields">
         <label class="field">Server
           <select id="source">
             <option value="plex">Plex</option>
@@ -291,7 +294,7 @@
           </select>
         </label>
 
-        <div id="source-plex">
+        <div id="source-plex" class="settings-fields settings-fields-inline">
           <label class="field">Server URL
             <input type="text" id="plex-url" placeholder="http://192.168.1.245:32400">
             <small>Use the host IP, not <code>localhost</code>, when running in Docker.</small>
@@ -304,7 +307,7 @@
           </label>
         </div>
 
-        <div id="source-jellyfin" class="is-hidden">
+        <div id="source-jellyfin" class="settings-fields settings-fields-inline is-hidden">
           <label class="field">Server URL
             <input type="text" id="jellyfin-url" placeholder="http://192.168.1.245:8096">
           </label>
@@ -317,6 +320,7 @@
           </label>
         </div>
 
+        </div>
         <div class="card-foot">
           <button class="btn" type="button" id="test-server">Test media server</button>
         </div>
@@ -350,7 +354,8 @@
           </div>
           <span class="test-badge" id="ntv-badge"></span>
         </header>
-        <label class="field">Playlist URL
+        <div class="settings-fields">
+        <label class="field field-wide">Playlist URL
           <input type="text" id="ntv-m3u" placeholder="https://your-nostalgiatv/channels.m3u?profileId=…">
           <small>Copy it from NostalgiaTV's Live TV / IPTV settings.</small>
         </label>
@@ -359,6 +364,7 @@
           <span class="switch-track"><span class="switch-thumb"></span></span>
           <span class="switch-text">Refresh artwork after each scan</span>
         </label>
+        </div>
         <div class="card-foot">
           <button class="btn" type="button" id="ntv-fetch">Fetch artwork now</button>
           <button class="btn btn-ghost" type="button" id="ntv-upload">Upload .m3u file</button>
@@ -374,6 +380,7 @@
             <p>How titles are placed when nothing already assigns them.</p>
           </div>
         </header>
+        <div class="settings-fields">
         <label class="field">Mode
           <select id="routing-mode">
             <option value="streaming_first">Streaming-first — 85% agreement</option>
@@ -395,6 +402,7 @@
             <option value="flag_only">Never place — flag only</option>
           </select>
         </label>
+        </div>
       </section>
 
       <section class="card settings-card">

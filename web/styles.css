@@ -59,12 +59,15 @@ code {
 .spacer { flex: 1 1 auto; }
 
 /* ── top bar ──────────────────────────────────────────────── */
+.header-stack {
+  position: sticky; top: 0; z-index: 30;
+  background: var(--bg); box-shadow: 0 6px 18px -12px rgba(0,0,0,.9);
+}
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 20px; padding: 12px 20px; min-height: 60px;
   background: linear-gradient(180deg, var(--surface) 0%, #10161e 100%);
   border-bottom: 1px solid var(--line);
-  position: sticky; top: 0; z-index: 30;
 }
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .brand-mark {
@@ -396,7 +399,14 @@ tr.is-selected:hover { background: rgba(69,217,196,.2); }
 .card-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
 
 /* ── settings ─────────────────────────────────────────────── */
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+/* Settings reads as a stack of full-width rows, not a wall of narrow columns.
+   Fields flow horizontally inside each card so a row stays shallow. */
+.settings-grid { display: flex; flex-direction: column; gap: 16px; max-width: 1180px; }
+.settings-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 18px; align-items: start; }
+.settings-fields-inline { display: contents; }
+.field-wide { grid-column: span 2; }
+.settings-card .card-head { margin-bottom: 14px; }
+.settings-card .field { margin-bottom: 12px; }
 .settings-card { display: flex; flex-direction: column; }
 .settings-save { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .test-badge {
@@ -457,7 +467,8 @@ ul.mini { margin: 6px 0 0; padding-left: 18px; color: var(--ink-3); font-size: 1
   main { padding: 14px; }
   .topbar { flex-wrap: wrap; gap: 12px; }
   .topbar-actions { width: 100%; justify-content: space-between; }
-  .settings-grid { grid-template-columns: 1fr; }
+  .settings-fields { grid-template-columns: 1fr; }
+  .field-wide { grid-column: auto; }
 }
 
 .logo-card { margin-top: 16px; }

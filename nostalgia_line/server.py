@@ -1036,6 +1036,35 @@ def download(which: str):
 
 # -- static ---------------------------------------------------------------
 
+
+def _asset_version() -> str:
+    """A token that changes whenever the UI files do.
+
+    index.html is served with no-store and the CSS/JS carry this in their query
+    string, so an upgrade always lands. Without it the browser keeps serving the
+    old interface and the new one appears simply not to exist.
+    """
+    stamp = 0.0
+    for name in ("index.html", "app.js", "styles.css"):
+        candidate = WEB_DIR / name
+        if candidate.exists():
+            stamp = max(stamp, candidate.stat().st_mtime)
+    return f"{__version__}-{int(stamp)}"
+
+
+@app.get("/", include_in_schema=False)
+def index() -> Response:
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    version = _asset_version()
+    html = html.replace('href="styles.css"', f'href="styles.css?v={version}"')
+    html = html.replace('src="app.js"', f'src="app.js?v={version}"')
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
+
+
 if WEB_DIR.exists():
     app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 else:  # pragma: no cover
