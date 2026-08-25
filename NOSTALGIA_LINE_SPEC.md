@@ -85,7 +85,11 @@ Apply in order. First match wins.
    | adult animation | 1051 Adult Skim |
    | anime | 1071 Munchyroll |
    | sports documentary | 1061 YESPN |
-4. **Genre channel** — last resort (§4, 1097–1110).
+4. **Genre suggestion** — last resort (§4, 1097–1110). Records what it would
+   have chosen but **places nothing**: measured against a real lineup the genre
+   rule agreed 0/9 times, consistent with §9's 69% error rate on the
+   low-confidence tier. The title is surfaced unassigned with the suggestion
+   attached, one click from being applied as a human decision.
 5. **Unassigned** — surface in the review queue. Never silently drop.
 
 ### For films
@@ -220,6 +224,11 @@ defaults:
 `channels.csv`. Offer the others as user-selectable modes, but do not make them default —
 themed routing empties the streaming channels entirely, and hybrid produces a file
 inconsistent with the 4,200 rows already in it.
+
+These figures were measured on one library. The app re-measures all three modes
+against whatever lineup the user imports — every title the lineup already places is
+free ground truth — and reports per-rule agreement with sample sizes
+(`GET /api/accuracy`). Below ~20 samples, report the count and render no verdict.
 
 Worth surfacing in the UI: streaming-first concentrates content. In testing, Netflicks
 alone took 161 of 806 series under pure streaming-first before the app's existing
