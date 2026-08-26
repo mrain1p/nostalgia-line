@@ -74,12 +74,19 @@ exist; until then it shows the spec's 85/61/33 marked as spec figures.
   rows) with 700 seeded ground-truth titles: panel showed 92.9% on n=687,
   genre suggestions 0/13 "too few to judge", suggestion click became a manual
   override and left the queue.
-- **Not yet verified on the NAS.** The NAS was unreachable from the dev
-  machine when this shipped (ping dead). After deploying: open Station
-  mapping, confirm `/api/accuracy` roughly reproduces the handover's 93%
-  network / 0-for-genre shape on the real library, and confirm the review
-  queue is ~22 network-shaped items plus genre items now showing as
-  unassigned-with-suggestion.
+- **Verified on the NAS, 2026-08-26,** against the live 806-show library and
+  the 4,938-row lineup. `/api/accuracy` reproduced the hand-run probe exactly:
+  network **673/724 = 93.0%**, orphan 4/4, content-type 2/9, retired genre
+  rule **0/9** as suggestions; overall 679/737 = 92.1% (the denominator is 9
+  smaller than the original 746 because genre placements no longer count as
+  opinions). Mode comparison on this library: streaming-first 92.1%, hybrid
+  68.8%, themed 17.9% — the spec's 85/61/33 ranking holds, more sharply.
+  Held-for-review is **exactly 22, all network-shaped** (Peacock ×5,
+  Smithsonian ×4, YouTube Premium ×2 orphans + 11 unmapped networks); the 34
+  genre items sit unassigned-with-suggestion. Preflight passes both ways on
+  the real file — 4,938 rows verbatim, 37 `Various` years intact — and with
+  `include_review=true` only the 22 export; genre contributes zero rows under
+  any flag.
 
 ## Item 2 — the ongoing workflow (done)
 
@@ -120,9 +127,13 @@ it off the same worker-completion point that calls `apply_delta`.
   monkeypatched `run_scan`.
 - Live local run: scheduler enabled with quiet 23–07 showed the provenance
   chip, the tile filtered to 14 new + 1 moved, pills rendered.
-- **Not yet verified on the NAS:** an unattended scan actually firing on
-  interval against real Plex. Enable it in Settings after deploying and check
-  the next morning.
+- On the NAS, 2026-08-26: schedule enabled (24 h, no quiet window) via
+  `/api/settings`; status reports the next due time and the save did **not**
+  mark results stale. The first post-upgrade scan correctly reports
+  `delta.tracked=false` — there was no previous v2 scan to diff against.
+- **One thing only time can verify:** the first unattended firing (due
+  ~01:07 on 2026-08-27). Check the provenance strip's scan age the next
+  morning; the delta starts tracking from that scan onward.
 
 ---
 
@@ -139,14 +150,14 @@ it off the same worker-completion point that calls `apply_delta`.
   accuracy view, scheduled scans, and the genre rule change; spec §3/§8
   updated to match reality.
 
-## Deploy checklist
+## Deploy checklist — completed 2026-08-26
 
-1. Push `dev` → CI runs 365 tests → `ghcr.io/mrain1p/nostalgia-line:dev`.
-2. Merge to `main` and push → `:latest`.
-3. On the NAS: pull, restart. Expect "no scan yet" (STATE_VERSION bump) — run
-   a scan; the TMDB cache is warm so it is quick.
-4. Verify the three NAS items above (accuracy numbers, review queue shape,
-   one scheduled scan).
+1. ~~Push `dev` → CI runs 365 tests → `ghcr.io/mrain1p/nostalgia-line:dev`.~~ Done.
+2. ~~Merge to `main` and push → `:latest`.~~ Done.
+3. ~~On the NAS: pull, restart, re-scan.~~ Done — the container was already on
+   the new image with a fresh scan when verification ran.
+4. ~~Verify accuracy numbers and review queue shape.~~ Done, results above.
+   Outstanding: observe the first unattended scan (~01:07 on 2026-08-27).
 
 ---
 
