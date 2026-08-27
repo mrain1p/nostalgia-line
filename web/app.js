@@ -94,7 +94,6 @@ const loaders = {
   networks: () => loadNetworks(),
   channels: () => loadChannels(),
   review: () => loadReview(),
-  stations: () => loadStations(),
   settings: () => loadSettings(),
 };
 
@@ -397,6 +396,7 @@ function activeFilterCount() {
   let n = HIDDEN_FILTERS.filter((id) => $(id).value).length;
   if ($('q').value.trim()) n += 1;
   if ($('status-filter').value) n += 1;
+  if ($('channel-filter').value) n += 1;
   if ($('review-filter').checked) n += 1;
   if ($('since-filter').checked) n += 1;
   if (state.networkFilter) n += 1;
@@ -429,13 +429,30 @@ function libraryParams(extra = {}) {
   if ($('source-filter').value) params.set('source', $('source-filter').value);
   if ($('type-filter').value) params.set('item_type', $('type-filter').value);
   if ($('section-filter').value) params.set('section', $('section-filter').value);
+  if ($('channel-filter').value) params.set('channel', $('channel-filter').value);
   if ($('review-filter').checked) params.set('review_only', 'true');
   if ($('since-filter').checked) params.set('since_last_scan', 'true');
   if (state.networkFilter) params.set('network', state.networkFilter);
   return params;
 }
 
+/** Every routable channel, in the toolbar, so "what is on channel X" is one
+ *  click rather than a trip through the Channels page. Rebuilt whenever the
+ *  channel list changes size (a custom channel was created or deleted). */
+async function fillChannelFilter() {
+  const select = $('channel-filter');
+  try { await ensureChannels(); } catch { return; }
+  if (select.options.length - 1 === state.channels.length) return;
+  const current = select.value;
+  select.length = 1; // keep "Any channel"
+  for (const channel of state.channels) {
+    select.add(new Option(`${channel.number} ${channel.name}`, String(channel.number)));
+  }
+  select.value = current; // falls back to '' if that channel is gone
+}
+
 async function loadLibrary() {
+  fillChannelFilter();
   const params = libraryParams({ offset: state.offset, limit: state.limit });
 
   let data;
@@ -555,14 +572,14 @@ $('q').addEventListener('input', () => {
   searchTimer = setTimeout(() => { state.offset = 0; loadLibrary(); }, 220);
 });
 $('show-posters').addEventListener('change', loadLibrary);
-['status-filter', 'section-filter', 'review-filter', 'since-filter', 'confidence-filter',
- 'source-filter', 'type-filter'].forEach((id) => {
+['status-filter', 'channel-filter', 'section-filter', 'review-filter', 'since-filter',
+ 'confidence-filter', 'source-filter', 'type-filter'].forEach((id) => {
   $(id).addEventListener('change', () => { state.offset = 0; loadLibrary(); });
 });
 $('clear-filters').addEventListener('click', () => {
   $('q').value = '';
-  ['status-filter', 'section-filter', 'confidence-filter', 'source-filter', 'type-filter']
-    .forEach((id) => { $(id).value = ''; });
+  ['status-filter', 'channel-filter', 'section-filter', 'confidence-filter', 'source-filter',
+   'type-filter'].forEach((id) => { $(id).value = ''; });
   $('review-filter').checked = false;
   $('since-filter').checked = false;
   state.networkFilter = '';
@@ -980,11 +997,16 @@ async function loadReview() {
 
 /* ── networks ──────────────────────────────────────────────── */
 let networkRows = [];
+let stationData = null;
 
 async function loadNetworks() {
   await ensureChannels();
-  const data = await api('/api/networks').catch(() => null);
-  if (!data) return;
+  const [data, stations] = await Promise.all([
+    api('/api/networks').catch(() => null),
+    api('/api/stations').catch(() => null),
+  ]);
+  if (stations) stationData = stations;
+  if (!data) { renderCustomMap(); return; }
   networkRows = data.networks;
   $('tab-networks-count').textContent = data.total || '';
   if (!data.scanned) {
@@ -1010,8 +1032,96 @@ async function loadNetworks() {
     ].map(([l, v, c]) => `<div class="stat ${c}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
   }
   renderNetworks();
+  renderCustomMap();
   loadAccuracy(); // deliberately not awaited - a few hundred cascade runs on first call
 }
+
+/** The user's custom channels, first - each fed by one real station.
+ *  Creating and deleting channels lives on the Channels page; this block is
+ *  only the mapping: which station fills which custom channel. */
+function renderCustomMap() {
+  const el = $('custom-map');
+  const stations = stationData?.stations || [];
+  if (!stations.length) {
+    el.innerHTML = `<div class="custom-map-empty hint">No custom channels yet. Create one on
+      the <button class="btn-link" data-go-channels>Channels page</button>, then feed it a
+      real station here.</div>`;
+    return;
+  }
+
+  // Stations seen in the library first (they can actually feed something),
+  // then everything else the map files know about.
+  const inLibrary = networkRows.map((n) => n.network);
+  const known = (stationData.known_networks || []).filter((n) => !inLibrary.includes(n));
+  const optionsFor = (current) => {
+    const seen = new Set();
+    const opts = ['<option value="">— nothing yet —</option>'];
+    for (const name of [...(current ? [current] : []), ...inLibrary, ...known]) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      opts.push(`<option value="${esc(name)}" ${name === current ? 'selected' : ''}>${esc(name)}</option>`);
+    }
+    return opts.join('');
+  };
+
+  el.innerHTML = `
+    <div class="custom-map-head">
+      <h3>Your custom channels</h3>
+      <span class="hint">Each is fed by one real station. Everything TMDB says aired there
+        routes to it${stations.some((s) => s.source_channels.length || s.keywords.length)
+          ? '; extra sources are edited on the Channels page' : ''}.</span>
+    </div>
+    ${stations.map((s) => {
+      const fed = s.source_networks[0] || '';
+      const extras = [];
+      if (s.source_networks.length > 1) {
+        extras.push(`also fed by ${s.source_networks.slice(1).map(esc).join(', ')}`);
+      }
+      if (s.source_channels.length) extras.push(`borrows ${s.source_channels.join(', ')}`);
+      if (s.keywords.length) extras.push(`keywords: ${s.keywords.map(esc).join(', ')}`);
+      if (!s.enabled) extras.push('disabled');
+      const landed = state.channels.find((c) => c.number === s.number);
+      return `<div class="custom-map-row ${s.enabled ? '' : 'is-off'}">
+        ${fed ? stationArt(fed) : `<img class="art-logo art-logo-file" alt=""
+          src="${esc(logoUrl(s.number))}?v=${state.logoVersion}">`}
+        <div class="custom-map-names">
+          <b>${s.number} · ${esc(s.name)}</b>
+          <span class="hint">${landed?.total ? `${landed.total} title(s) land here` : 'nothing lands here yet'}${
+            extras.length ? ` · ${extras.join(' · ')}` : ''}</span>
+        </div>
+        <label class="custom-map-feed"><span class="hint">fed by</span>
+          <select data-feed-station="${s.number}">${optionsFor(fed)}</select>
+        </label>
+        <span class="netstatus netstatus-${s.mode === 'mirror' ? 'orphan' : 'custom'}"
+          title="${s.mode === 'mirror' ? 'Shows the content as well as the original channel'
+                                       : 'Takes the content instead of the original channel'}">${esc(s.mode)}</span>
+      </div>`;
+    }).join('')}`;
+}
+
+$('custom-map').addEventListener('click', (event) => {
+  if (event.target.closest('[data-go-channels]')) showTab('channels');
+});
+
+$('custom-map').addEventListener('change', async (event) => {
+  const select = event.target.closest('[data-feed-station]');
+  if (!select) return;
+  const station = stationData?.stations.find((s) => s.number === Number(select.dataset.feedStation));
+  if (!station) return;
+  const network = select.value;
+  try {
+    await api('/api/stations', {
+      method: 'POST',
+      body: JSON.stringify({ ...station, source_networks: network ? [network] : [] }),
+    });
+    banner(network
+      ? `${station.name} is now fed by ${network}. Re-scan to route its titles.`
+      : `${station.name} no longer claims a station. Re-scan to apply.`, 'ok', 4000);
+    state.channels = [];
+    loadNetworks();
+    refreshStatus();
+  } catch (err) { banner(err.message, 'err'); }
+});
 
 function renderNetworks() {
   const onlyUnmapped = $('only-unmapped').checked;
@@ -1021,24 +1131,31 @@ function renderNetworks() {
     .filter((n) => !needle || n.network.toLowerCase().includes(needle));
 
   $('network-body').innerHTML = rows.map((n) => {
-    // A network scattered across a dozen channels is the symptom worth seeing,
-    // so show the top few and count the rest rather than printing a wall of chips.
-    const shown = n.landing.slice(0, 3);
-    const rest = n.landing.length - shown.length;
-    const landing = n.landing.length
-      ? `<div class="pairing">
-          <img class="art-logo art-logo-file sm" loading="lazy" alt=""
-            src="${esc(logoUrl(n.landing[0].number))}?v=${state.logoVersion}">
-          <div>${shown.map((l) => `<span class="chip" title="${l.titles} title(s)">${l.number} ${esc(l.name)}</span>`).join('')}
-          ${rest > 0 ? `<span class="muted" title="${n.landing.map((l) => `${l.number} ${l.name} (${l.titles})`).join(', ')}">+${rest} more</span>` : ''}</div>
-        </div>`
-      : '<span class="pairing-none">not routed anywhere yet</span>';
-    const scattered = n.landing.length >= 4 && n.status !== 'mapped'
-      ? `<span class="scatter" title="These titles landed on ${n.landing.length} different channels because nothing maps this network">scattered across ${n.landing.length}</span>`
+    // The strict 1:1 mapping is the editable part; everything else the media
+    // sits on (lineup rows, co-productions, mirrors) is display beside it.
+    const elsewhere = n.landing.filter((l) => l.number !== n.channel_number);
+    const shown = elsewhere.slice(0, 3);
+    const rest = elsewhere.length - shown.length;
+    const also = elsewhere.length
+      ? `${shown.map((l) => `<span class="chip" title="${l.titles} title(s)">${l.number} ${esc(l.name)}</span>`).join('')}
+         ${rest > 0 ? `<span class="muted" title="${elsewhere.map((l) => `${l.number} ${l.name} (${l.titles})`).join(', ')}">+${rest} more</span>` : ''}`
+      : '<span class="muted">—</span>';
+    const scattered = elsewhere.length >= 4 && n.status !== 'mapped' && n.status !== 'station'
+      ? `<div><span class="scatter" title="These titles landed on ${n.landing.length} different channels because nothing maps this network">scattered across ${n.landing.length}</span></div>`
       : '';
     const options = state.channels
       .map((c) => `<option value="${c.number}" ${c.number === n.channel_number ? 'selected' : ''}>${c.number} ${esc(c.name)}</option>`)
       .join('');
+    const feeds = n.status === 'station'
+      ? `<div class="feeds-station">
+           <span class="chip">${n.channel_number} ${esc(n.channel_name)}</span>
+           <span class="hint">claimed by your custom channel — change it above</span>
+         </div>`
+      : `<div class="maprow">
+           <select data-map-select="${esc(n.network)}"><option value="">— pick a channel —</option>${options}</select>
+           <button class="btn btn-small" data-map-save="${esc(n.network)}">Set</button>
+           ${n.status === 'custom' ? `<button class="btn btn-small" data-map-clear="${esc(n.network)}" title="Back to the shipped mapping">Reset</button>` : ''}
+         </div>`;
     return `<tr>
       <td class="title-cell">
         <div class="station-cell">
@@ -1053,12 +1170,8 @@ function renderNetworks() {
       <td class="num">${n.episodes}</td>
       <td><span class="netstatus netstatus-${n.status}">${n.status}</span>
         ${n.needs_review ? `<span class="flag" title="${n.needs_review} need review">⚑${n.needs_review}</span>` : ''}</td>
-      <td>${landing}${scattered ? `<div>${scattered}</div>` : ''}</td>
-      <td class="maprow">
-        <select data-map-select="${esc(n.network)}"><option value="">— pick a channel —</option>${options}</select>
-        <button class="btn btn-small" data-map-save="${esc(n.network)}">Map</button>
-        ${n.status === 'custom' ? `<button class="btn btn-small" data-map-clear="${esc(n.network)}">Reset</button>` : ''}
-      </td>
+      <td>${feeds}</td>
+      <td>${also}${scattered}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="6" class="empty">Nothing matches.</td></tr>';
 
@@ -1582,11 +1695,22 @@ $('logo-clear-btn').addEventListener('click', async () => {
   loadLogos(); loadChannels();
 });
 
-/* ── channels ──────────────────────────────────────────────── */
+/* ── channels (stock and custom together) ──────────────────── */
 async function loadChannels() {
-  const data = await api('/api/channels').catch(() => null);
+  const [data, stations] = await Promise.all([
+    api('/api/channels').catch(() => null),
+    api('/api/stations').catch(() => null),
+  ]);
+  if (stations) {
+    stationData = stations;
+    $('station-problems').innerHTML = stations.problems.length
+      ? `<div class="notice-block">${stations.problems.map(esc).join('<br>')}</div>`
+      : '';
+    $('st-number').placeholder = `auto (${stations.next_number})`;
+  }
   if (!data) return;
   state.channels = data.channels.filter((c) => c.accepts_content);
+  fillChannelFilter();
   renderChannels(data.channels);
   loadLogos();
 }
@@ -1603,6 +1727,7 @@ function renderChannels(channels) {
       const hot = c.total > max * 0.6 ? 'hot' : '';
       const tag = c.empty ? '<span class="tag tag-empty">empty</span>'
         : c.thin ? '<span class="tag tag-thin">thin</span>' : '';
+      const custom = c.category === 'custom';
       return `<tr class="is-clickable" data-channel="${c.number}">
         <td class="num">${c.number}</td>
         <td class="col-art"><img class="art-logo art-logo-${esc(c.logo_source || 'badge')}"
@@ -1614,41 +1739,53 @@ function renderChannels(channels) {
         <td class="num">${c.added ? `+${c.added}` : ''}</td>
         <td class="num">${c.total}</td>
         <td><div class="bar"><span class="${hot}" style="width:${pct}%"></span></div></td>
+        <td class="row-actions">${custom ? `
+          <button class="btn btn-small" data-edit-station="${c.number}" title="Edit this custom channel">Edit</button>
+          <button class="btn btn-small btn-ghost" data-del-station="${c.number}" title="Delete this custom channel">✕</button>` : ''}</td>
       </tr>`;
     }).join('');
-  $('channel-body').innerHTML = rows || '<tr><td colspan="8" class="empty">Nothing matches.</td></tr>';
+  $('channel-body').innerHTML = rows || '<tr><td colspan="9" class="empty">Nothing matches.</td></tr>';
 }
 
 ['hide-nocontent', 'only-problem'].forEach((id) => $(id).addEventListener('change', loadChannels));
 
-/* ── custom stations ───────────────────────────────────────── */
-async function loadStations() {
-  const data = await api('/api/stations').catch(() => null);
-  if (!data) return;
-
-  $('station-problems').innerHTML = data.problems.length
-    ? `<div class="notice-block">${data.problems.map(esc).join('<br>')}</div>`
-    : '';
-  $('st-number').placeholder = `auto (${data.next_number})`;
-
-  $('station-list').innerHTML = data.stations.map((s) => `
-    <div class="card">
-      <h4>${s.number} · ${esc(s.name)}</h4>
-      <div class="meta">${esc(s.mode)}${s.enabled ? '' : ' · disabled'}</div>
-      ${s.source_networks.length ? `<div>Networks: ${s.source_networks.map(esc).join(', ')}</div>` : ''}
-      ${s.source_channels.length ? `<div>Borrows: ${s.source_channels.join(', ')}</div>` : ''}
-      ${s.keywords.length ? `<div>Keywords: ${s.keywords.map(esc).join(', ')}</div>` : ''}
-      <div class="card-actions"><button class="btn btn-small" data-del-station="${s.number}">Delete</button></div>
-    </div>`).join('') || '<p class="empty">No custom stations yet.</p>';
-
-  $('station-list').querySelectorAll('[data-del-station]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      await api(`/api/stations/${btn.dataset.delStation}`, { method: 'DELETE' });
-      state.channels = [];
-      loadStations();
-    });
-  });
+/* ── custom channels, managed in place ─────────────────────── */
+function openStationForm(station = null) {
+  $('station-form-title').textContent = station
+    ? `Edit ${station.number} · ${station.name}` : 'New custom channel';
+  $('st-number').value = station ? station.number : '';
+  $('st-name').value = station ? station.name : '';
+  $('st-networks').value = station ? station.source_networks.join(', ') : '';
+  $('st-channels').value = station ? station.source_channels.join(', ') : '';
+  $('st-keywords').value = station ? station.keywords.join(', ') : '';
+  $('st-mode').value = station ? station.mode : 'claim';
+  $('station-form').classList.remove('is-hidden');
+  $('st-name').focus();
 }
+
+$('new-station-btn').addEventListener('click', () => openStationForm());
+$('station-cancel').addEventListener('click', () => $('station-form').classList.add('is-hidden'));
+
+$('channel-table').addEventListener('click', async (event) => {
+  const edit = event.target.closest('[data-edit-station]');
+  if (edit) {
+    const station = stationData?.stations.find((s) => s.number === Number(edit.dataset.editStation));
+    if (station) openStationForm(station);
+    return;
+  }
+  const del = event.target.closest('[data-del-station]');
+  if (del) {
+    const number = Number(del.dataset.delStation);
+    const station = stationData?.stations.find((s) => s.number === number);
+    if (!confirm(`Delete custom channel ${number}${station ? ` '${station.name}'` : ''}? `
+      + 'Titles routed to it go back to their stock channels on the next scan.')) return;
+    await api(`/api/stations/${number}`, { method: 'DELETE' });
+    banner('Custom channel deleted. Re-scan to re-route its titles.', 'ok', 3500);
+    state.channels = [];
+    loadChannels();
+    refreshStatus();
+  }
+});
 
 $('station-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -1664,9 +1801,11 @@ $('station-form').addEventListener('submit', async (event) => {
   try {
     await api('/api/stations', { method: 'POST', body: JSON.stringify(payload) });
     event.target.reset();
-    banner('Station saved. Re-scan to route content to it.', 'ok', 3500);
+    $('station-form').classList.add('is-hidden');
+    banner('Channel saved. Re-scan to route content to it.', 'ok', 3500);
     state.channels = [];
-    loadStations();
+    loadChannels();
+    refreshStatus();
   } catch (err) {
     banner(err.message, 'err');
   }

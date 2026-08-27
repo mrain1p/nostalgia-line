@@ -1073,3 +1073,28 @@ def test_the_scheduler_decision_ladder(client):
 
     sched.enabled = False
     sched.quiet_start = sched.quiet_end = None
+
+
+# -- station mapping page -------------------------------------------------
+
+
+def test_networks_report_a_station_claim(client):
+    """The mapping page shows custom channels first; a network claimed by one
+    must say so instead of showing the map route the cascade would ignore."""
+    created = client.post(
+        "/api/stations", json={"name": "Claimer", "source_networks": ["Weird Service"]}
+    ).json()
+    try:
+        body = client.get("/api/networks").json()
+        weird = next(n for n in body["networks"] if n["network"] == "Weird Service")
+        assert weird["status"] == "station"
+        assert weird["channel_number"] == created["number"]
+        assert weird["channel_name"] == "Claimer"
+    finally:
+        client.delete(f"/api/stations/{created['number']}")
+
+
+def test_library_filters_by_channel(client):
+    body = client.get("/api/library", params={"channel": 1068}).json()
+    assert {i["title"] for i in body["items"]} == {"Alpha Show"}
+    assert client.get("/api/library", params={"channel": 1044}).json()["total"] == 0
