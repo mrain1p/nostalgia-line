@@ -325,12 +325,18 @@ class ScanResult:
         rows.sort(key=lambda r: r["title"].casefold())
         return rows
 
-    def network_rollup(self, network_map, orphan_map, catalog: ChannelCatalog) -> list[dict]:
+    def network_rollup(
+        self, network_map, orphan_map, catalog: ChannelCatalog, stations=None
+    ) -> list[dict]:
         """Every TMDB network in the library, with where it currently routes.
 
         This is the leverage point. One unmapped network can strand forty titles;
         deciding it once is worth forty individual decisions, which is exactly the
         drudgery the spec calls untenable.
+
+        A network claimed by a custom station reports status "station": in the
+        cascade that claim beats the network map, so showing the map's answer
+        would describe a route nothing takes.
         """
         buckets: dict[str, list[LibraryEntry]] = {}
         for entry in self.entries:
@@ -341,7 +347,10 @@ class ScanResult:
         for network, group in buckets.items():
             mapped = network_map.get(network, _countries(group))
             orphan = orphan_map.get(network.casefold())
-            if network_map.is_overridden(network):
+            claims = stations.claiming_network(network) if stations else []
+            if claims:
+                status = "station"
+            elif network_map.is_overridden(network):
                 status = "custom"
             elif mapped:
                 status = "mapped"
@@ -350,7 +359,10 @@ class ScanResult:
             else:
                 status = "unmapped"
 
-            target = mapped or (orphan[:2] if orphan else None)
+            if claims:
+                target = (claims[0].number, claims[0].name)
+            else:
+                target = mapped or (orphan[:2] if orphan else None)
             landing: dict[int, int] = {}
             for entry in group:
                 for number in entry.channels:
@@ -363,7 +375,11 @@ class ScanResult:
                     "episodes": sum(e.episode_count for e in group),
                     "status": status,
                     "channel_number": target[0] if target else None,
-                    "channel_name": catalog.name_of(target[0]) if target else None,
+                    # A claiming station names itself: it may not be registered
+                    # with the catalog, and the catalog would say "Unknown".
+                    "channel_name": (
+                        target[1] if claims else catalog.name_of(target[0])
+                    ) if target else None,
                     "needs_review": sum(1 for e in group if e.resolution.needs_review),
                     "unassigned": sum(1 for e in group if e.status == STATUS_UNASSIGNED),
                     "already_assigned": sum(1 for e in group if e.status == STATUS_APP),
@@ -377,8 +393,8 @@ class ScanResult:
             )
 
         # Worst first: unmapped networks with the most titles are the best use of
-        # the user's attention.
-        rank = {"unmapped": 0, "orphan": 1, "custom": 2, "mapped": 3}
+        # the user's attention. A station claim is as settled as a stock mapping.
+        rank = {"unmapped": 0, "orphan": 1, "custom": 2, "station": 3, "mapped": 3}
         rows.sort(key=lambda r: (rank[r["status"]], -r["titles"]))
         return rows
 

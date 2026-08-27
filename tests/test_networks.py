@@ -154,6 +154,28 @@ def test_rollup_marks_a_user_mapping_as_custom(rollup_result, catalog, orphan_ma
     assert weird["channel_number"] == 1099
 
 
+def test_rollup_reports_a_station_claim_over_the_map(rollup_result, catalog, orphan_map):
+    """A custom station's claim beats the network map in the cascade, so the
+    rollup must say the same - showing the map's answer would describe a route
+    nothing takes."""
+    from nostalgia_line.stations import CustomStation, StationBook
+
+    network_map = load_network_map(DATA / "network_map.csv")
+    book = StationBook([CustomStation(number=1300, name="My Prestige", source_networks=["HBO"])])
+    rows = rollup_result.network_rollup(network_map, orphan_map, catalog, book)
+    hbo = next(r for r in rows if r["network"] == "HBO")
+    assert hbo["status"] == "station"
+    assert hbo["channel_number"] == 1300
+    assert hbo["channel_name"] == "My Prestige"
+
+    # A disabled station claims nothing.
+    book.get(1300).enabled = False
+    rows = rollup_result.network_rollup(network_map, orphan_map, catalog, book)
+    hbo = next(r for r in rows if r["network"] == "HBO")
+    assert hbo["status"] == "mapped"
+    assert hbo["channel_number"] == 1068
+
+
 def test_rollup_reports_where_titles_actually_landed(rollup_result, catalog, orphan_map):
     network_map = load_network_map(DATA / "network_map.csv")
     rows = rollup_result.network_rollup(network_map, orphan_map, catalog)

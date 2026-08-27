@@ -1302,7 +1302,7 @@ def networks() -> dict:
         return {"total": 0, "networks": [], "scanned": False, "diagnostics": None}
     network_map = _network_map_with_overrides()
     orphan_map = load_orphan_networks(state.cfg.path(state.cfg.data.orphan_networks))
-    rows = state.result.network_rollup(network_map, orphan_map, state.catalog)
+    rows = state.result.network_rollup(network_map, orphan_map, state.catalog, state.stations)
     return {
         "total": len(rows),
         "scanned": True,

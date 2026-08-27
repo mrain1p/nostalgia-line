@@ -62,8 +62,7 @@
   <button class="tab is-active" data-tab="library" role="tab">Library <span class="count" id="tab-library-count"></span></button>
   <button class="tab" data-tab="review" role="tab">Review <span class="count" id="tab-review-count"></span></button>
   <button class="tab" data-tab="networks" role="tab" title="Point each real-world station at a NostalgiaTV channel">Station mapping <span class="count" id="tab-networks-count"></span></button>
-  <button class="tab" data-tab="channels" role="tab" title="Your NostalgiaTV channels and what is on each one">Channels</button>
-  <button class="tab" data-tab="stations" role="tab" title="Channels you created yourself in NostalgiaTV">Custom channels</button>
+  <button class="tab" data-tab="channels" role="tab" title="Your NostalgiaTV channels — stock and custom — and what is on each one">Channels</button>
   <button class="tab" data-tab="settings" role="tab">Settings</button>
 </nav>
 </div>
@@ -93,6 +92,9 @@
         <option value="unassigned">Unassigned</option>
         <option value="assigned">Placed by Line</option>
         <option value="already_assigned">Already assigned</option>
+      </select>
+      <select id="channel-filter" aria-label="Channel" title="Only titles on this channel">
+        <option value="">Any channel</option>
       </select>
       <label class="switch">
         <input type="checkbox" id="review-filter">
@@ -212,10 +214,16 @@
     <header class="page-head">
       <div class="page-head-text">
         <h2>Station mapping</h2>
-        <p>Point each real-world station at a NostalgiaTV channel. HBO feeds H.B.Yo Min, AMC feeds A.M.Sea, and so on. Mapping one station moves every title on it at once, which makes this the fastest way to clear uncertainty. Worst-covered first.</p>
+        <p>Your default mappings: each real-world station feeds exactly one NostalgiaTV
+           channel — HBO feeds H.B.Yo Min, AMC feeds A.M.Sea. Set the mapping here;
+           any other channels a station's titles also sit on (from your lineup file, or
+           co-productions) are shown beside it. Mapping one station moves every title on
+           it at once. Worst-covered first.</p>
       </div>
       <div class="page-actions"></div>
     </header>
+
+    <div id="custom-map"></div>
 
     <div class="stats" id="network-stats"></div>
     <div class="toolbar">
@@ -235,8 +243,8 @@
       <table id="network-table">
         <thead>
           <tr>
-            <th>Network</th><th class="num">Titles</th><th class="num col-eps">Eps</th>
-            <th>Status</th><th>Routes to</th><th>Map every title to…</th>
+            <th>Station</th><th class="num">Titles</th><th class="num col-eps">Eps</th>
+            <th>Status</th><th>Feeds channel</th><th>Titles also sit on</th>
           </tr>
         </thead>
         <tbody id="network-body"></tbody>
@@ -263,10 +271,47 @@
     <header class="page-head">
       <div class="page-head-text">
         <h2>Channels</h2>
-        <p>Your 113 NostalgiaTV channels and how full each one is. Click a channel to see everything on it, and what the real station it parodies actually aired.</p>
+        <p>Every channel NostalgiaTV can play — the 113 stock channels plus any you
+           created yourself — and how full each one is. Click a channel to see
+           everything on it, and what the real station it parodies actually aired.</p>
       </div>
-      <div class="page-actions"></div>
+      <div class="page-actions"><button class="btn btn-primary" id="new-station-btn">New custom channel</button></div>
     </header>
+
+    <form id="station-form" class="card form-card is-hidden">
+      <h3 id="station-form-title">New custom channel</h3>
+      <p class="hint">A channel you created in NostalgiaTV. Tell Nostalgia Line what it is —
+         a real station TMDB knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>),
+         or an existing channel whose content it should borrow — and it fills automatically.
+         The station it is fed by can also be set on the Station mapping tab.</p>
+      <div class="grid">
+        <label class="field">Channel number<input type="number" id="st-number" placeholder="auto"></label>
+        <label class="field">Station name<input type="text" id="st-name" required placeholder="Retro Gaming"></label>
+        <label class="field">Mode
+          <select id="st-mode">
+            <option value="claim">Claim — take the content</option>
+            <option value="mirror">Mirror — also show it</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid">
+        <label class="field">Fed by networks <small>comma separated</small>
+          <input type="text" id="st-networks" placeholder="G4, TechTV">
+        </label>
+        <label class="field">Borrow channels <small>numbers</small>
+          <input type="text" id="st-channels" placeholder="1007, 1006">
+        </label>
+        <label class="field">Keywords <small>optional</small>
+          <input type="text" id="st-keywords" placeholder="video game, esports">
+        </label>
+      </div>
+      <div class="card-foot">
+        <button class="btn btn-primary" type="submit">Save channel</button>
+        <button class="btn btn-ghost" type="button" id="station-cancel">Cancel</button>
+      </div>
+    </form>
+    <div id="station-problems"></div>
+
     <div class="toolbar">
       <label class="switch">
         <input type="checkbox" id="hide-nocontent" checked>
@@ -287,7 +332,7 @@
           <tr>
             <th class="num">#</th><th class="col-art"></th><th>Channel</th>
             <th class="col-cat">Category</th><th class="num">Existing</th>
-            <th class="num">Added</th><th class="num">Total</th><th>Balance</th>
+            <th class="num">Added</th><th class="num">Total</th><th>Balance</th><th></th>
           </tr>
         </thead>
         <tbody id="channel-body"></tbody>
@@ -313,44 +358,6 @@
       <div id="logo-coverage" class="logo-coverage"></div>
       <div id="logo-result" class="test-result"></div>
     </div>
-  </section>
-
-  <!-- ── Stations ────────────────────────────────────────────── -->
-  <section id="tab-stations" class="panel">
-    <header class="page-head">
-      <div class="page-head-text">
-        <h2>Custom channels</h2>
-        <p>Channels you created yourself in NostalgiaTV. Tell Nostalgia Line what each one is — a real station TMDB knows (<code>G4</code>, <code>TechTV</code>, <code>Toonami</code>), or an existing channel whose content it should borrow — and it will fill automatically.</p>
-      </div>
-      <div class="page-actions"></div>
-    </header>
-
-    <form id="station-form" class="card form-card">
-      <div class="grid">
-        <label class="field">Channel number<input type="number" id="st-number" placeholder="auto"></label>
-        <label class="field">Station name<input type="text" id="st-name" required placeholder="Retro Gaming"></label>
-        <label class="field">Mode
-          <select id="st-mode">
-            <option value="claim">Claim — take the content</option>
-            <option value="mirror">Mirror — also show it</option>
-          </select>
-        </label>
-      </div>
-      <div class="grid">
-        <label class="field">Source networks <small>comma separated</small>
-          <input type="text" id="st-networks" placeholder="G4, TechTV">
-        </label>
-        <label class="field">Borrow channels <small>numbers</small>
-          <input type="text" id="st-channels" placeholder="1007, 1006">
-        </label>
-        <label class="field">Keywords <small>optional</small>
-          <input type="text" id="st-keywords" placeholder="video game, esports">
-        </label>
-      </div>
-      <button class="btn btn-primary" type="submit">Save station</button>
-    </form>
-    <div id="station-problems"></div>
-    <div id="station-list" class="cards"></div>
   </section>
 
   <!-- ── Settings ────────────────────────────────────────────── -->

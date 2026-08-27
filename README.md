@@ -155,7 +155,9 @@ running, and a failed one reports its error and does not stop the next.
 **Library tab** — the main view, with posters. Every title as a row: name, year,
 seasons, episodes, network, channel, confidence, and how it was placed. Sortable,
 filterable, searchable. The stat tiles at the top are the filters — click
-*Unassigned* or *Needs review* to see exactly what the number counts.
+*Unassigned* or *Needs review* to see exactly what the number counts — and the
+toolbar filters straight to one channel, so "what is on Cartoon Net" is a
+dropdown, not a trip through another page.
 
 Click a row for the full picture: overview, TMDB network, genres, ids, every
 channel it sits on, and the reasoning chain behind each placement with its rule
@@ -173,9 +175,11 @@ titles each from a single unmapped network, and mapping that network once clears
 the cluster. Each group carries the fix inline, and you can accept or assign a
 whole group at once.
 
-**Channels tab** — channel-by-channel counts with artwork, flagging channels that
-are empty or have 1–3 titles. Watch this: streaming-first routing concentrates
-content. In testing, Netflicks alone took 161 of 806 series.
+**Channels tab** — every channel NostalgiaTV can play, stock and custom together,
+with counts and artwork, flagging channels that are empty or have 1–3 titles.
+Custom channels are created, edited and deleted right here — no separate page.
+Watch this: streaming-first routing concentrates content. In testing, Netflicks
+alone took 161 of 806 series.
 
 Click a channel for its contents — every title on it, why it landed there, and
 what else it sits on. A second pane shows **what actually aired on the real
@@ -183,9 +187,15 @@ station** the channel parodies, marking what you have and what you are missing.
 Titles the lineup file places there but that are not in your library are listed
 separately, because there is nothing to edit about them.
 
-**Networks tab** — the highest-leverage screen. Every TMDB network in your
-library, worst-covered first, with how many titles each one accounts for and
-where they currently land. See [Fixing a whole network at once](#fixing-a-whole-network-at-once).
+**Station mapping tab** — the highest-leverage screen, and where your default
+mappings live. Each real-world station feeds exactly one channel; set that here.
+Beside the mapping, the table shows any *other* channels a station's titles also
+sit on — lineup rows and co-productions — without conflating them with the
+route. Your custom channels sit at the top, each with a "fed by" picker: point
+one at a real station and everything TMDB says aired there routes to it. A
+network claimed this way is labelled `station`, because the claim beats the
+network map. Everything else lists worst-covered first. See
+[Fixing a whole network at once](#fixing-a-whole-network-at-once).
 
 **Export…** → previews what would be written and runs a preflight — every
 original row survives verbatim, non-numeric years kept as written, nothing
@@ -272,7 +282,9 @@ touched, and the file it replaces is backed up alongside it.
 ### Custom stations
 
 If you've added your own channels in NostalgiaTV, tell Nostalgia Line what they
-are in the vocabulary the cascade already speaks:
+are. Create them on the **Channels** tab; point each at the real station that
+feeds it on **Station mapping** (or in the same form). The vocabulary is the one
+the cascade already speaks:
 
 > *"Channel 200 'Retro Gaming' should use the lineup for G4."*
 > *"Channel 201 'Saturday Mornings' should mirror Boomer-Rang."*
